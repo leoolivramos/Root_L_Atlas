@@ -1,0 +1,277 @@
+# catalog.yaml
+# ============================================================
+# RootL Atlas — Catálogo Central de Fontes de Dados
+# ============================================================
+# Este arquivo é o inventário canônico de governança de dados.
+# Os orquestradores leem estas definições para identificar a
+# necessidade de descoberta, extração e validação.
+# ============================================================
+
+sources:
+  - id: ibge_censo_2022_setores
+    name: "Malha de Setores Censitários"
+    agency: "IBGE — Instituto Brasileiro de Geografia e Estatística"
+    domain: "território"
+    format: "GeoPackage"
+    format_alt: "Shapefile"
+    spatial_resolution: "setor_censitario"
+    update_frequency: "decenal_anual"
+    crs: "EPSG:4674"          # SIRGAS 2000
+    target_crs: "EPSG:4326"   # WGS84
+    scope:
+      state: "MT"
+      ibge_state_code: "51"
+    urls:
+      # URL padrão IBGE para GeoPackage do Censo 2022 - MT
+      primary: "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_de_setores_censitarios__divisoes_intramunicipais/censo_2022/setores_censitarios_br_2022.zip"
+      mirror: "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_de_setores_censitarios__divisoes_intramunicipais/censo_2022/"
+    bronze_path: "bronze/ibge/censo_2022/"
+    silver_table: "setores_censitarios_silver"
+    gold_table: "setores_censitarios"
+    primary_key: "CD_SETOR"
+    canonical_pk: "cd_setor"
+    column_mapping:
+      CD_SETOR: cd_setor
+      CD_MUNICIPIO: cd_municipio
+      NM_MUNICIPIO: nm_municipio
+      CD_UF: cd_uf
+      SIGLA: sg_uf
+      CD_DIST: cd_distrito
+      NM_DIST: nm_distrito
+      CD_SUBDIST: cd_subdistrito
+      NM_SUBDIST: nm_subdistrito
+      NM_BAIRRO: nm_bairro
+      CD_SIT: tipo_setor
+      geometry: geom
+    validations:
+      - "cd_setor is not null"
+      - "len(cd_setor) == 15"
+      - "geom is valid"
+      - "geom not empty"
+      - "latitude between -20 and -7"   # limites aproximados do MT
+      - "longitude between -62 and -49" # limites aproximados do MT
+    schedule:
+      cron: "0 3 1 * *"   # 1º dia de cada mês, 03h
+      retry_count: 3
+
+  - id: inep_censo_escolar_2025
+    name: "Microdados do Censo Escolar"
+    agency: "INEP — Instituto Nacional de Estudos e Pesquisas Educacionais"
+    domain: "educação"
+    format: "CSV"
+    format_alt: "ZIP"
+    spatial_resolution: "ponto"
+    update_frequency: "anual"
+    crs: "EPSG:4326"
+    target_crs: "EPSG:4326"
+    scope:
+      state: "MT"
+      filter_column: "CO_UF"
+      filter_value: "51"
+    urls:
+      primary: "https://download.inep.gov.br/microdados/microdados_educacao_basica_2024.zip"
+      download_page: "https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/censo-escolar"
+    bronze_path: "bronze/inep/censo_escolar/"
+    silver_table: "escolas_silver"
+    gold_table: "escolas"
+    primary_key: "CO_ENTIDADE"
+    canonical_pk: "co_entidade"
+    lat_col: "NU_LATITUDE"
+    lon_col: "NU_LONGITUDE"
+    encoding: "latin-1"
+    separator: "|"
+    column_mapping:
+      CO_ENTIDADE: co_entidade
+      NO_ENTIDADE: no_entidade
+      TP_DEPENDENCIA: tp_dependencia
+      TP_SITUACAO_FUNCIONAMENTO: tp_situacao_funcionamento
+      CO_MUNICIPIO: co_municipio
+      NO_MUNICIPIO: no_municipio
+      NO_BAIRRO: no_bairro
+      NU_LATITUDE: lat
+      NU_LONGITUDE: lon
+      IN_INF_CRECHE: in_inf_creche
+      IN_INF_PRE_ESCOLA: in_inf_pre_escola
+      IN_FUND_AI: in_fund_anos_iniciais
+      IN_FUND_AF: in_fund_anos_finais
+      IN_MED_MEDIO_INTEGRADO: in_medio_integrado
+      IN_MED_REGULAR: in_medio_regular
+      IN_EJA: in_eja
+      IN_ESP_EXCLUSIVA: in_especial_exclusiva
+      IN_LABORATORIO_INFORMATICA: in_laboratorio_informatica
+      IN_LABORATORIO_CIENCIAS: in_laboratorio_ciencias
+      IN_BIBLIOTECA: in_biblioteca
+      IN_QUADRA_ESPORTES: in_quadra_esportes
+      IN_ACESSIBILIDADE_PRIORITARIA: in_acessibilidade
+      QT_SALAS_UTILIZADAS: qt_salas_utilizadas
+      QT_EQUIP_COMPUTADOR: qt_equip_computador
+      QT_MAT_BAS: qt_mat_bas
+    tp_dependencia_map:
+      1: "Federal"
+      2: "Estadual"
+      3: "Municipal"
+      4: "Privada"
+    validations:
+      - "co_entidade is not null"
+      - "lat between -20 and -7"
+      - "lon between -62 and -49"
+      - "tp_dependencia in [1, 2, 3, 4]"
+    schedule:
+      cron: "0 4 1 2 *"   # 1º de fevereiro (após release anual)
+      retry_count: 3
+
+  - id: datasus_cnes_estab
+    name: "Cadastro Nacional de Estabelecimentos de Saúde"
+    agency: "DATASUS / Ministério da Saúde"
+    domain: "saúde"
+    format: "DBC"
+    format_alt: "Parquet"
+    spatial_resolution: "ponto"
+    update_frequency: "mensal"
+    crs: "EPSG:4326"
+    target_crs: "EPSG:4326"
+    scope:
+      state: "MT"
+      state_code_dbc: "MT"
+    urls:
+      ftp_base: "ftp://ftp.datasus.gov.br/dissemin/publicos/CNES/200508_/Dados/ST/"
+      primary: "ftp://ftp.datasus.gov.br/dissemin/publicos/CNES/200508_/Dados/ST/STMT{AAMM}.dbc"
+    bronze_path: "bronze/datasus/cnes/"
+    silver_table: "cnes_silver"
+    gold_table: "estabelecimentos_saude"
+    primary_key: "CNES"
+    canonical_pk: "co_cnes"
+    dbc_encoding: "windows-1252"
+    library: "pysus"    # Obrigatório: converte DBC → DataFrame
+    validations:
+      - "co_cnes is not null"
+      - "len(str(co_cnes)) == 7"
+    schedule:
+      cron: "0 5 10 * *"   # Dia 10 de cada mês
+      retry_count: 5
+
+  - id: sinesp_vde_mun
+    name: "Ocorrências e Vítimas por Município"
+    agency: "SINESP — Sistema Nacional de Informações de Segurança Pública"
+    domain: "segurança"
+    format: "CSV"
+    spatial_resolution: "municipio"    # RESOLUÇÃO MÁXIMA — NUNCA EXTRAPOLAR
+    update_frequency: "mensal"
+    crs: null                           # Dados tabulares, sem geometria própria
+    scope:
+      state: "MT"
+      filter_column: "UF"
+      filter_value: "MT"
+    urls:
+      download_page: "https://www.gov.br/mj/pt-br/assuntos/sua-seguranca/seguranca-publica/sinesp-1/dados-abertos-sinesp"
+    bronze_path: "bronze/sinesp/"
+    silver_table: "sinesp_silver"
+    gold_table: "ocorrencias_seguranca"
+    primary_key: ["ANO", "MES", "MUNICIPIO", "NATUREZA_DELITO"]
+    canonical_pk: ["ano", "mes", "co_municipio", "tipo_crime"]
+    nota_etica: >
+      RESOLUÇÃO ORIGINAL = MUNICÍPIO. É PROIBIDO inferir ou implicar
+      localização mais específica (bairro, via, ponto). A geometria
+      usada é o polígono do município inteiro, sem exceção.
+    validations:
+      - "ano >= 2015"
+      - "mes between 1 and 12"
+    schedule:
+      cron: "0 6 15 * *"
+      retry_count: 3
+
+  - id: osm_mt_pbf
+    name: "OpenStreetMap — Extrato Regional Mato Grosso"
+    agency: "OpenStreetMap contributors / Geofabrik"
+    domain: "infraestrutura"
+    format: "PBF"
+    spatial_resolution: "ponto_linha_poligono"
+    update_frequency: "diaria"
+    crs: "EPSG:4326"
+    target_crs: "EPSG:4326"
+    urls:
+      primary: "https://download.geofabrik.de/south-america/brazil/centro-oeste-latest.osm.pbf"
+      mirror: "https://osm-extracts.hydrography.org/"
+    bronze_path: "bronze/osm/"
+    silver_tables:
+      - "osm_roads_silver"
+      - "osm_buildings_silver"
+    gold_tables:
+      - "malha_viaria_osm"
+    highway_filter:
+      - motorway
+      - trunk
+      - primary
+      - secondary
+      - tertiary
+      - unclassified
+      - residential
+      - service
+      - motorway_link
+      - trunk_link
+      - primary_link
+      - secondary_link
+      - tertiary_link
+    license: "ODbL 1.0"
+    attribution: "© OpenStreetMap contributors"
+    schedule:
+      cron: "0 2 * * 1"   # Toda segunda-feira
+      retry_count: 3
+
+  - id: mapbiomas_col11_lu
+    name: "Cobertura e Uso da Terra — Coleção 11"
+    agency: "MapBiomas"
+    domain: "meio_ambiente"
+    format: "GeoTIFF (COG)"
+    spatial_resolution: "celula_matricial_30m"
+    update_frequency: "anual"
+    crs: "EPSG:4326"
+    target_crs: "EPSG:4326"
+    scope:
+      state: "MT"
+      bbox: [-62.0, -20.0, -49.0, -7.0]
+    urls:
+      primary: "https://storage.googleapis.com/mapbiomas-public/brasil/collection-8/lclu/coverage/"
+      gee_asset: "projects/mapbiomas-workspace/public/collection8/mapbiomas_collection80_integration_v1"
+    bronze_path: "bronze/mapbiomas/"
+    gold_table: "cobertura_solo_mapbiomas"
+    processing: "cog_window_read"   # Leitura por janela — não baixar arquivo inteiro
+    years: [1985, 1990, 1995, 2000, 2005, 2010, 2015, 2018, 2020, 2022, 2023]
+    aggregation: "municipio"        # Agregação espacial por município no MVP
+    schedule:
+      cron: "0 1 1 6 *"   # 1º de junho (após release anual)
+      retry_count: 2
+
+  - id: ana_bacias_hidro
+    name: "Divisão Hidrográfica Ottocodificada"
+    agency: "ANA — Agência Nacional de Águas e Saneamento Básico"
+    domain: "recursos_hídricos"
+    format: "Feature Service (REST)"
+    spatial_resolution: "poligono_bacia"
+    update_frequency: "continua"
+    crs: "EPSG:4674"
+    target_crs: "EPSG:4326"
+    urls:
+      arcgis_rest: "https://arcgis.ana.gov.br/arcgis/rest/services/Portal/OttoRegioes/MapServer/"
+      download: "https://metadados.snirh.gov.br/geonetwork/srv/api/records/"
+    bronze_path: "bronze/ana/"
+    gold_table: "bacias_hidrograficas"
+    validations:
+      - "geom is valid"
+    schedule:
+      cron: "0 2 1 1 *"   # 1º de janeiro
+      retry_count: 3
+
+# ============================================================
+# Configurações globais do catálogo
+# ============================================================
+global:
+  target_crs: "EPSG:4326"
+  parquet_engine: "pyarrow"
+  geoparquet_version: "1.0"
+  compression: "snappy"
+  max_retries: 3
+  retry_backoff_seconds: 30
+  manifest_schema_version: "1.0"
+  hash_algorithm: "sha256"
+  bronze_immutable: true          # NUNCA modificar bronze após ingestão
