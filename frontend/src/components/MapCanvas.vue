@@ -141,8 +141,137 @@ function addAllLayers() {
   })
 }
 
+async function updateSegurancaHeatmap() {
+  if (!map) return
+  const segCfg = layersStore.getLayer('seguranca')
+  if (!segCfg?.visible) return
+
+  try {
+    const params: Record<string, string | number> = {
+      metrica: filtersStore.segurancaMetrica,
+    }
+    if (filtersStore.segurancaAno !== null) params.ano = filtersStore.segurancaAno
+    if (filtersStore.segurancaTipoCrime && filtersStore.segurancaTipoCrime !== 'todos') {
+      params.tipo_crime = filtersStore.segurancaTipoCrime
+    }
+    if (filtersStore.segurancaMes !== null) params.mes = filtersStore.segurancaMes
+
+    const res = await axios.get(`${API}/features/seguranca/heatmap`, { params })
+    const source = map.getSource('source-seguranca') as maplibregl.GeoJSONSource
+    if (source && res.data) {
+      source.setData(res.data)
+    }
+  } catch (e) {
+    console.warn('Erro ao atualizar heatmap de segurança:', e)
+  }
+}
+
+function addSegurancaHeatmapLayer(cfg: LayerConfig) {
+  if (!map) return
+
+  const sourceId = 'source-seguranca'
+  const heatLayerId = 'seguranca-heat'
+  const pointLayerId = 'seguranca-point'
+
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    })
+  }
+
+  // Camada de Calor (Heatmap)
+  if (!map.getLayer(heatLayerId)) {
+    map.addLayer({
+      id: heatLayerId,
+      type: 'heatmap',
+      source: sourceId,
+      maxzoom: 15,
+      paint: {
+        'heatmap-weight': [
+          'interpolate', ['linear'], ['get', 'weight'],
+          0, 0,
+          1, 1,
+        ],
+        'heatmap-intensity': [
+          'interpolate', ['linear'], ['zoom'],
+          4, 0.7,
+          8, 1.8,
+          12, 3.2,
+        ],
+        'heatmap-color': [
+          'interpolate', ['linear'], ['heatmap-density'],
+          0, 'rgba(33, 102, 172, 0)',
+          0.2, 'rgb(103, 169, 207)',
+          0.4, 'rgb(209, 229, 240)',
+          0.6, 'rgb(253, 219, 199)',
+          0.8, 'rgb(239, 138, 98)',
+          1, 'rgb(178, 24, 43)',
+        ],
+        'heatmap-radius': [
+          'interpolate', ['linear'], ['zoom'],
+          4, 20,
+          7, 36,
+          10, 56,
+          14, 80,
+        ],
+        'heatmap-opacity': cfg.opacity,
+      },
+      layout: { visibility: cfg.visible ? 'visible' : 'none' },
+    })
+  }
+
+  // Pontos de centroide para identificação e interação
+  if (!map.getLayer(pointLayerId)) {
+    map.addLayer({
+      id: pointLayerId,
+      type: 'circle',
+      source: sourceId,
+      minzoom: 6,
+      paint: {
+        'circle-radius': [
+          'interpolate', ['linear'], ['get', 'weight'],
+          0, 4.0,
+          0.5, 8.0,
+          1, 14.0,
+        ],
+        'circle-color': [
+          'interpolate', ['linear'], ['get', 'weight'],
+          0, '#38bdf8',
+          0.3, '#34d399',
+          0.6, '#fbbf24',
+          1, '#ef4444',
+        ],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 1.5,
+        'circle-opacity': [
+          'interpolate', ['linear'], ['zoom'],
+          6, 0.2,
+          8, 0.75,
+          11, 0.95,
+        ],
+        'circle-stroke-opacity': [
+          'interpolate', ['linear'], ['zoom'],
+          6, 0.2,
+          8, 0.85,
+        ],
+      },
+      layout: { visibility: cfg.visible ? 'visible' : 'none' },
+    })
+  }
+
+  if (cfg.visible) {
+    updateSegurancaHeatmap()
+  }
+}
+
 function addVectorLayer(cfg: LayerConfig) {
   if (!map) return
+
+  if (cfg.id === 'seguranca') {
+    addSegurancaHeatmapLayer(cfg)
+    return
+  }
 
   const sourceId = `source-${cfg.id}`
   const fillLayerId = `${cfg.id}-fill`
@@ -414,6 +543,40 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
     `
   }
 
+  if (layer === 'seguranca') {
+    const metricLabel = filtersStore.segurancaMetrica === 'ocorrencias' ? 'Ocorrências' : 'Vítimas'
+    const crimeLabel = filtersStore.segurancaTipoCrime === 'todos' ? 'Todos os crimes' : filtersStore.segurancaTipoCrime
+    const val = Number(props['val'] ?? props['qtd_ocorrencias'] ?? 0).toLocaleString('pt-BR')
+    const vitimas = Number(props['qtd_vitimas'] ?? 0).toLocaleString('pt-BR')
+    const periodo = filtersStore.segurancaAno ? `${filtersStore.segurancaAno}` : 'Todos os anos'
+    const mesTxt = filtersStore.segurancaMes ? ` · Mês ${filtersStore.segurancaMes}` : ''
+
+    return `
+      <div class="clean-popup">
+        <div class="clean-popup__badge" style="background: rgba(239, 68, 68, 0.12); color: #ef4444;">Segurança Pública (SINESP)</div>
+        <h4 class="clean-popup__title">${props['nm_municipio'] ?? 'Município'}</h4>
+        <div class="clean-popup__rows">
+          <div class="clean-popup__row">
+            <span>${metricLabel}</span>
+            <strong style="color: #ef4444; font-size: 0.95rem;">${val}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Tipo de Crime</span>
+            <strong style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${crimeLabel}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Período</span>
+            <strong>${periodo}${mesTxt}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Total de Vítimas</span>
+            <strong>${vitimas}</strong>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
   return `<div class="clean-popup"><h4 class="clean-popup__title">${layer}</h4></div>`
 }
 
@@ -439,11 +602,17 @@ watch(
       maxzoom: 19,
     })
 
-    // Insere o basemap atrás de todas as camadas vetoriais existentes
+    // Insere o basemap atrás de todas as camadas existentes
     const layers = map.getStyle().layers || []
     let firstVectorLayerId: string | undefined
     for (const l of layers) {
-      if (l.id.includes('-fill') || l.id.includes('-line') || l.id.includes('-circle')) {
+      if (
+        l.id.includes('-fill') ||
+        l.id.includes('-line') ||
+        l.id.includes('-circle') ||
+        l.id.includes('-heat') ||
+        l.id.includes('-point')
+      ) {
         firstVectorLayerId = l.id
         break
       }
@@ -470,6 +639,23 @@ watch(
   (layers) => {
     if (!map || !mapStore.mapReady) return
     layers.forEach((cfg) => {
+      if (cfg.id === 'seguranca') {
+        const heatId = 'seguranca-heat'
+        const ptId = 'seguranca-point'
+        const vis = cfg.visible ? 'visible' : 'none'
+        if (map!.getLayer(heatId)) {
+          map!.setLayoutProperty(heatId, 'visibility', vis)
+          map!.setPaintProperty(heatId, 'heatmap-opacity', cfg.opacity)
+        }
+        if (map!.getLayer(ptId)) {
+          map!.setLayoutProperty(ptId, 'visibility', vis)
+        }
+        if (cfg.visible) {
+          updateSegurancaHeatmap()
+        }
+        return
+      }
+
       const fillId = `${cfg.id}-fill`
       const lineId = `${cfg.id}-line`
       const circleId = `${cfg.id}-circle`
@@ -489,6 +675,19 @@ watch(
     })
   },
   { deep: true }
+)
+
+// Filtros de segurança SINESP → atualiza dados do heatmap
+watch(
+  [
+    () => filtersStore.segurancaMetrica,
+    () => filtersStore.segurancaAno,
+    () => filtersStore.segurancaTipoCrime,
+    () => filtersStore.segurancaMes,
+  ],
+  () => {
+    updateSegurancaHeatmap()
+  }
 )
 
 // Limiar de acessibilidade → atualiza cor dos setores instantaneamente
