@@ -256,10 +256,49 @@ sources:
       download: "https://metadados.snirh.gov.br/geonetwork/srv/api/records/"
     bronze_path: "bronze/ana/"
     gold_table: "bacias_hidrograficas"
+  - id: inpe_bdqueimadas_mensal
+    name: "Focos de Calor e Queimadas"
+    agency: "INPE — Instituto Nacional de Pesquisas Espaciais"
+    domain: "meio_ambiente"
+    format: "CSV"
+    format_alt: "ZIP"
+    spatial_resolution: "ponto"
+    update_frequency: "mensal"
+    crs: "EPSG:4326"
+    target_crs: "EPSG:4326"
+    scope:
+      state: "MT"
+      filter_column: "estado_id"
+      filter_value: "51"
+    urls:
+      primary: "https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/mensal/Brasil/"
+    bronze_path: "bronze/inpe/queimadas/"
+    silver_table: "queimadas_mt"
+    gold_table: "focos_queimadas"
+    gold_table_resumo: "queimadas_municipais_resumo"
+    primary_key: "id"
+    canonical_pk: "id"
+    column_mapping:
+      id: id
+      lat: lat
+      lon: lon
+      data_hora_gmt: data_hora_gmt
+      satelite: satelite
+      municipio: municipio
+      municipio_id: co_municipio
+      estado: estado
+      bioma: bioma
+      numero_dias_sem_chuva: numero_dias_sem_chuva
+      precipitacao: precipitacao
+      risco_fogo: risco_fogo
+      frp: frp
     validations:
-      - "geom is valid"
+      - "id is not null"
+      - "lat between -20 and -7"
+      - "lon between -62 and -49"
+      - "bioma in ['Amazônia', 'Cerrado', 'Pantanal', 'Não Informado']"
     schedule:
-      cron: "0 2 1 1 *"   # 1º de janeiro
+      cron: "0 6 5 * *"   # Dia 5 de cada mês
       retry_count: 3
 
 # ============================================================

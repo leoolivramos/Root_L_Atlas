@@ -505,3 +505,119 @@ def mapbiomas_to_silver(
     df.to_parquet(output, index=False, compression="snappy")
     logger.success(f"[MapBiomas→Silver] Cobertura Silver: {len(df):,} registros → {output}")
     return output
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Silver: Focos de Queimadas — INPE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def inpe_queimadas_to_silver(
+    csv_paths: list[Path] | Path,
+    silver_path: Path,
+) -> Path:
+    """
+    Transforma arquivos mensais de queimadas do INPE filtrados para MT em Silver Parquet.
+
+    Aplica:
+    - Tipagem rigorosa de coordenadas e timestamps
+    - Tratamento de sentinelas (-999 em dias sem chuva → NaN/None)
+    - Extração de ano, mês, dia e flag de satélite de referência (AQUA)
+    - Validação de coordenadas na BBOX de Mato Grosso
+    """
+    if isinstance(csv_paths, Path):
+        if csv_paths.is_dir():
+            files = sorted(list(csv_paths.glob("focos_queimadas_mt_*.csv")))
+        else:
+            files = [csv_paths]
+    else:
+        files = list(csv_paths)
+
+    if not files:
+        raise FileNotFoundError(f"Nenhum arquivo CSV de queimadas encontrado em: {csv_paths}")
+
+    logger.info(f"[INPE Queimadas→Silver] Lendo {len(files)} arquivo(s) de focos...")
+    dfs = []
+    for f in files:
+        try:
+            df_part = pd.read_csv(f, dtype=str)
+            if not df_part.empty:
+                dfs.append(df_part)
+        except Exception as e:
+            logger.warning(f"Erro ao ler {f}: {e}")
+
+    if not dfs:
+        raise ValueError("Nenhum registro de queimadas para consolidar.")
+
+    df = pd.concat(dfs, ignore_index=True)
+    logger.info(f"  {len(df):,} registros brutos de MT combinados")
+
+    # Normaliza colunas existentes
+    df["id"] = df["id"].astype(str).str.strip()
+    df["lat"] = pd.to_numeric(df["lat"].astype(str).str.strip(), errors="coerce")
+    df["lon"] = pd.to_numeric(df["lon"].astype(str).str.strip(), errors="coerce")
+
+    # Remove coordenadas nulas ou fora de MT
+    df = df.dropna(subset=["id", "lat", "lon"])
+    df = df[
+        (df["lon"] >= MT_BBOX["lon_min"] - 0.5) & (df["lon"] <= MT_BBOX["lon_max"] + 0.5) &
+        (df["lat"] >= MT_BBOX["lat_min"] - 0.5) & (df["lat"] <= MT_BBOX["lat_max"] + 0.5)
+    ].copy()
+
+    # Deduplicação por id
+    df = df.drop_duplicates(subset=["id"])
+
+    # Timestamps
+    df["data_hora_gmt"] = pd.to_datetime(df["data_hora_gmt"], errors="coerce")
+    df = df.dropna(subset=["data_hora_gmt"])
+
+    # Fuso horário local de Mato Grosso (UTC-4)
+    # data_local é a data civil em MT
+    df["data_local"] = (df["data_hora_gmt"] - pd.Timedelta(hours=4)).dt.date
+    df["ano"] = df["data_hora_gmt"].dt.year.astype(int)
+    df["mes"] = df["data_hora_gmt"].dt.month.astype(int)
+    df["dia"] = df["data_hora_gmt"].dt.day.astype(int)
+
+    # Satélite e Satélite de Referência (AQUA é o satélite de referência padrão INPE)
+    df["satelite"] = df["satelite"].astype(str).str.strip()
+    df["is_referencia"] = df["satelite"].str.upper().str.contains("AQUA")
+
+    # Município e Código IBGE
+    df["municipio"] = df["municipio"].astype(str).str.strip()
+    if "municipio_id" in df.columns:
+        df["co_municipio"] = df["municipio_id"].astype(str).str.strip()
+    else:
+        df["co_municipio"] = None
+
+    df["estado"] = "MATO GROSSO"
+    df["co_uf"] = 51
+
+    # Bioma
+    df["bioma"] = df["bioma"].astype(str).str.strip()
+    df["bioma"] = df["bioma"].replace({"": "Não Informado", "nan": "Não Informado"})
+
+    # Sentinelas e conversões numéricas
+    # numero_dias_sem_chuva: -999 indica sem dado
+    dias = pd.to_numeric(df["numero_dias_sem_chuva"], errors="coerce")
+    df["numero_dias_sem_chuva"] = dias.apply(lambda x: int(x) if pd.notna(x) and x >= 0 else None)
+
+    # Precipitação
+    precip = pd.to_numeric(df["precipitacao"], errors="coerce")
+    df["precipitacao"] = precip.apply(lambda x: round(float(x), 2) if pd.notna(x) and x >= 0 else None)
+
+    # Risco de Fogo (0.0 a 1.0)
+    risco = pd.to_numeric(df["risco_fogo"], errors="coerce")
+    df["risco_fogo"] = risco.apply(lambda x: round(float(x), 2) if pd.notna(x) and 0.0 <= x <= 1.0 else None)
+
+    # FRP (Fire Radiative Power em MW)
+    frp = pd.to_numeric(df["frp"], errors="coerce")
+    df["frp"] = frp.apply(lambda x: round(float(x), 2) if pd.notna(x) and x >= 0 else None)
+
+    df["fonte_id"] = "inpe_bdqueimadas_mensal"
+    df["versao_processamento"] = "silver_v1"
+
+    silver_path.mkdir(parents=True, exist_ok=True)
+    output = silver_path / "queimadas_mt.parquet"
+    df.to_parquet(output, index=False, compression="snappy")
+    logger.success(f"[INPE Queimadas→Silver] Focos Silver: {len(df):,} registros → {output}")
+    return output
+

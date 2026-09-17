@@ -300,6 +300,22 @@ def escolas_to_gold(
         matched = gdf["cd_setor_ref"].notna().sum()
         logger.info(f"  {matched:,}/{len(gdf):,} escolas associadas a um setor")
 
+    # ─── Filtro geográfico: remove escolas fora do Mato Grosso ─────────────────
+    # Bbox de MT: longitude [-62.0, -49.5], latitude [-20.0, -6.5]
+    MT_LON_MIN, MT_LON_MAX = -62.0, -49.5
+    MT_LAT_MIN, MT_LAT_MAX = -20.0, -6.5
+
+    antes = len(gdf)
+    gdf = gdf[gdf.geometry.notna()]
+    if len(gdf) > 0:
+        gdf = gdf[
+            (gdf.geometry.x >= MT_LON_MIN) & (gdf.geometry.x <= MT_LON_MAX) &
+            (gdf.geometry.y >= MT_LAT_MIN) & (gdf.geometry.y <= MT_LAT_MAX)
+        ]
+    removidos = antes - len(gdf)
+    if removidos > 0:
+        logger.warning(f"  [FILTRO] {removidos} escolas removidas por estarem fora do bbox de MT.")
+
     gold_path.mkdir(parents=True, exist_ok=True)
     output = gold_path / "escolas.parquet"
     write_geoparquet_with_bbox(gdf, output)
@@ -596,4 +612,70 @@ def mapbiomas_to_gold(
     df.to_parquet(output, index=False, compression="snappy")
     logger.success(f"[Gold] Cobertura do solo: {len(df):,} registros → {output}")
     return output
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gold: Focos de Queimadas — INPE (BDQueimadas)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def inpe_queimadas_to_gold(
+    silver_path: Path,
+    gold_path: Path,
+    municipios_parquet: Path | None = None,
+) -> tuple[Path, Path]:
+    """
+    Transforma dados de Focos de Queimadas Silver para Gold:
+    1. Gera GeoParquet pontual (focos_queimadas.parquet) em EPSG:4326 com bbox.
+    2. Gera tabela analítica agregada (queimadas_municipais_resumo.parquet)
+       com total de focos, satélite de referência, FRP e biomas (Amazônia, Cerrado, Pantanal).
+    """
+    logger.info("[Silver→Gold] Processando focos de queimadas do INPE...")
+    df = pd.read_parquet(silver_path)
+
+    # Garante geometria Point
+    geometry = gpd.points_from_xy(df["lon"], df["lat"], crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
+
+    # Se municipios_parquet disponível, valida e completa nomes oficiais
+    if municipios_parquet and municipios_parquet.exists():
+        try:
+            mun_df = pd.read_parquet(municipios_parquet, columns=["cd_municipio", "nm_municipio"])
+            mun_dict = mun_df.set_index("cd_municipio")["nm_municipio"].to_dict()
+            # Onde municipio está nulo ou genérico, preenche com nome oficial
+            gdf["nm_municipio_oficial"] = gdf["co_municipio"].map(mun_dict)
+            gdf["municipio"] = gdf["nm_municipio_oficial"].fillna(gdf["municipio"])
+            gdf = gdf.drop(columns=["nm_municipio_oficial"], errors="ignore")
+        except Exception as e:
+            logger.warning(f"Aviso ao cruzar municípios em queimadas: {e}")
+
+    gold_path.mkdir(parents=True, exist_ok=True)
+    focos_output = gold_path / "focos_queimadas.parquet"
+    write_geoparquet_with_bbox(gdf, focos_output)
+    logger.success(f"[Gold] Focos de Queimadas: {len(gdf):,} registros → {focos_output}")
+
+    # Agregação Analítica Mensal por Município
+    logger.info("[Silver→Gold] Calculando resumo analítico municipal de queimadas...")
+    valid_mun = df[df["co_municipio"].notna()].copy()
+    valid_mun["co_municipio"] = valid_mun["co_municipio"].astype(str).str.strip()
+
+    grp = valid_mun.groupby(["co_municipio", "municipio", "ano", "mes"], as_index=False)
+    resumo_df = grp.agg(
+        total_focos=("id", "count"),
+        focos_referencia=("is_referencia", lambda x: int(x.sum())),
+        focos_amazonia=("bioma", lambda x: int((x.astype(str).str.strip() == "Amazônia").sum())),
+        focos_cerrado=("bioma", lambda x: int((x.astype(str).str.strip() == "Cerrado").sum())),
+        focos_pantanal=("bioma", lambda x: int((x.astype(str).str.strip() == "Pantanal").sum())),
+        frp_medio=("frp", lambda x: round(float(x.dropna().mean()), 2) if x.dropna().count() > 0 else None),
+        frp_maximo=("frp", lambda x: round(float(x.dropna().max()), 2) if x.dropna().count() > 0 else None),
+        risco_fogo_medio=("risco_fogo", lambda x: round(float(x.dropna().mean()), 2) if x.dropna().count() > 0 else None),
+        dias_sem_chuva_medio=("numero_dias_sem_chuva", lambda x: round(float(x.dropna().mean()), 1) if x.dropna().count() > 0 else None),
+    )
+    resumo_df = resumo_df.rename(columns={"municipio": "nm_municipio"})
+
+    resumo_output = gold_path / "queimadas_municipais_resumo.parquet"
+    resumo_df.to_parquet(resumo_output, index=False, compression="snappy")
+    logger.success(f"[Gold] Resumo Municipal Queimadas: {len(resumo_df):,} registros → {resumo_output}")
+
+    return focos_output, resumo_output
+
 
