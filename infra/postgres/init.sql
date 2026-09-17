@@ -331,22 +331,69 @@ LEFT JOIN atlas.estabelecimentos_saude es ON es.co_municipio = m.cd_municipio
 GROUP BY m.cd_municipio, m.nm_municipio, m.area_km2, m.populacao_2022, m.geom;
 
 -- ============================================================
--- Comentários de documentação nas tabelas
+-- TABELA: focos_queimadas
+-- Focos de calor e queimadas — INPE BDQueimadas
 -- ============================================================
-COMMENT ON TABLE atlas.setores_censitarios IS
-    'Setores censitários do IBGE (Censo 2022). Unidade espacial fundamental da plataforma. '
-    'Fonte: IBGE — Malha de Setores Censitários. SIRGAS 2000 / WGS84 (EPSG:4326).';
+CREATE TABLE IF NOT EXISTS atlas.focos_queimadas (
+    id                      VARCHAR(64) PRIMARY KEY,  -- UUID da detecção INPE
+    geom                    GEOMETRY(POINT, 4326) NOT NULL,
+    data_hora_gmt           TIMESTAMPTZ NOT NULL,
+    data_local              DATE NOT NULL,
+    ano                     SMALLINT NOT NULL,
+    mes                     SMALLINT NOT NULL,
+    dia                     SMALLINT NOT NULL,
+    satelite                VARCHAR(32) NOT NULL,
+    is_referencia           BOOLEAN NOT NULL DEFAULT FALSE,
+    municipio               TEXT NOT NULL,
+    co_municipio            VARCHAR(7),
+    estado                  TEXT NOT NULL DEFAULT 'MATO GROSSO',
+    co_uf                   SMALLINT NOT NULL DEFAULT 51,
+    bioma                   VARCHAR(32) NOT NULL,
+    numero_dias_sem_chuva   SMALLINT,
+    precipitacao            NUMERIC(6, 2),
+    risco_fogo              NUMERIC(4, 2),
+    frp                     NUMERIC(8, 2),  -- Fire Radiative Power (MW)
+    -- Linhagem
+    fonte_id                TEXT NOT NULL DEFAULT 'inpe_bdqueimadas_mensal',
+    data_extracao           TIMESTAMPTZ,
+    hash_arquivo            TEXT,
+    url_origem              TEXT,
+    criado_em               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_queimadas_municipio
+        FOREIGN KEY (co_municipio)
+        REFERENCES atlas.municipios_mt (cd_municipio)
+        ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
 
-COMMENT ON TABLE atlas.escolas IS
-    'Infraestrutura educacional. Fonte: INEP Censo Escolar. '
-    'Coordenadas originais do registro geocodificado do INEP.';
+-- ============================================================
+-- TABELA: queimadas_municipais_resumo
+-- Resumo mensal consolidado por município para choropleth e analytics
+-- ============================================================
+CREATE TABLE IF NOT EXISTS atlas.queimadas_municipais_resumo (
+    co_municipio            VARCHAR(7) NOT NULL,
+    nm_municipio            TEXT NOT NULL,
+    ano                     SMALLINT NOT NULL,
+    mes                     SMALLINT NOT NULL,
+    total_focos             INTEGER NOT NULL DEFAULT 0,
+    focos_referencia        INTEGER NOT NULL DEFAULT 0,
+    focos_amazonia          INTEGER NOT NULL DEFAULT 0,
+    focos_cerrado           INTEGER NOT NULL DEFAULT 0,
+    focos_pantanal          INTEGER NOT NULL DEFAULT 0,
+    frp_medio               NUMERIC(8, 2),
+    frp_maximo              NUMERIC(8, 2),
+    risco_fogo_medio        NUMERIC(4, 2),
+    dias_sem_chuva_medio    NUMERIC(5, 1),
+    atualizado_em           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (co_municipio, ano, mes),
+    CONSTRAINT fk_resumo_municipio
+        FOREIGN KEY (co_municipio)
+        REFERENCES atlas.municipios_mt (cd_municipio)
+        ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
 
-COMMENT ON TABLE atlas.ocorrencias_seguranca IS
-    'Ocorrências do SINESP. ATENÇÃO: resolução máxima = município. '
-    'Não extrapolar para bairros ou vias — dado não existe nessa granularidade.';
+COMMENT ON TABLE atlas.focos_queimadas IS
+    'Detecções de focos de calor e queimadas do INPE (Programa Queimadas). '
+    'Coordenadas geocodificadas em WGS84 (EPSG:4326). Inclui FRP (Fire Radiative Power) e Risco de Fogo.';
 
-COMMENT ON COLUMN atlas.escolas.geom IS
-    'Ponto geocodificado original do INEP. Projeção WGS84 (EPSG:4326).';
-
-COMMENT ON COLUMN atlas.acessibilidade_educacional.metodo_calculo IS
-    'MVP: distância euclidiana. Fase 2: tempo de viagem via OSRM (rede viária OSM).';
+COMMENT ON TABLE atlas.queimadas_municipais_resumo IS
+    'Agregações mensais de queimadas por município, bioma e intensidade térmica (FRP).';
