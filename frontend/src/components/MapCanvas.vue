@@ -44,7 +44,9 @@ const CLICKABLE_LAYERS = [
   'municipios-fill',
   'saude-circle',
   'malha_viaria-line',
-  'seguranca-point',
+  'seguranca-choropleth',  // camada principal do choropleth de segurança
+  'queimadas-circle',      // pontos MVT individuais de focos de queimada
+  'queimadas-choropleth',  // polígono municipal agregado de queimadas
 ]
 
 // ─── Inicialização do mapa ───────────────────────────────────────────────────
@@ -52,7 +54,7 @@ const CLICKABLE_LAYERS = [
 onMounted(async () => {
   if (!mapContainer.value) return
 
-  const initialBasemap = BASEMAPS[mapStore.activeBasemap] || BASEMAPS.light
+  const initialBasemap = BASEMAPS[mapStore.activeBasemap] || BASEMAPS.osm
 
   map = new maplibregl.Map({
     container: mapContainer.value,
@@ -96,6 +98,17 @@ onMounted(async () => {
   map.on('load', () => {
     mapStore.setMapReady(true)
     addAllLayers()
+
+    // Registra eventos de click e hover APÓS as layers serem criadas pelo addAllLayers()
+    CLICKABLE_LAYERS.forEach((layerId) => {
+      map!.on('click', layerId, handleLayerClick)
+      map!.on('mouseenter', layerId, () => {
+        if (map) map.getCanvas().style.cursor = 'pointer'
+      })
+      map!.on('mouseleave', layerId, () => {
+        if (map) map.getCanvas().style.cursor = ''
+      })
+    })
   })
 
   // Sincroniza viewport → store
@@ -107,17 +120,6 @@ onMounted(async () => {
       zoom: map.getZoom(),
       bearing: map.getBearing(),
       pitch: map.getPitch(),
-    })
-  })
-
-  // Eventos de hover e clique nas camadas
-  CLICKABLE_LAYERS.forEach((layerId) => {
-    map!.on('click', layerId, handleLayerClick)
-    map!.on('mouseenter', layerId, () => {
-      if (map) map.getCanvas().style.cursor = 'pointer'
-    })
-    map!.on('mouseleave', layerId, () => {
-      if (map) map.getCanvas().style.cursor = ''
     })
   })
 
@@ -141,8 +143,10 @@ function addAllLayers() {
   })
 }
 
-async function updateSegurancaHeatmap() {
-  if (!map) return
+// ——— Segurança: Choropleth Municipal —————————————————————————————————————
+
+async function updateSegurancaChoropleth() {
+  if (!map || !mapStore.mapReady) return
   const segCfg = layersStore.getLayer('seguranca')
   if (!segCfg?.visible) return
 
@@ -162,16 +166,16 @@ async function updateSegurancaHeatmap() {
       source.setData(res.data)
     }
   } catch (e) {
-    console.warn('Erro ao atualizar heatmap de segurança:', e)
+    console.warn('Erro ao atualizar choropleth de segurança:', e)
   }
 }
 
-function addSegurancaHeatmapLayer(cfg: LayerConfig) {
+function addSegurancaChoroplethLayer(cfg: LayerConfig) {
   if (!map) return
 
   const sourceId = 'source-seguranca'
-  const heatLayerId = 'seguranca-heat'
-  const pointLayerId = 'seguranca-point'
+  const choroplethId = 'seguranca-choropleth'   // fill de polígono municipal
+  const strokeId = 'seguranca-stroke'            // borda dos municípios
 
   if (!map.getSource(sourceId)) {
     map.addSource(sourceId, {
@@ -180,88 +184,239 @@ function addSegurancaHeatmapLayer(cfg: LayerConfig) {
     })
   }
 
-  // Camada de Calor (Heatmap)
-  if (!map.getLayer(heatLayerId)) {
+  // Fill: polígono municipal colorido por intensidade
+  if (!map.getLayer(choroplethId)) {
     map.addLayer({
-      id: heatLayerId,
-      type: 'heatmap',
+      id: choroplethId,
+      type: 'fill',
       source: sourceId,
-      maxzoom: 15,
       paint: {
-        'heatmap-weight': [
+        'fill-color': [
           'interpolate', ['linear'], ['get', 'weight'],
-          0, 0,
-          1, 1,
+          0,   'rgba(240, 249, 255, 0.1)',
+          0.1, '#bfdbfe',
+          0.3, '#60a5fa',
+          0.5, '#f59e0b',
+          0.7, '#ef4444',
+          1.0, '#7f1d1d',
         ],
-        'heatmap-intensity': [
-          'interpolate', ['linear'], ['zoom'],
-          4, 0.7,
-          8, 1.8,
-          12, 3.2,
+        'fill-opacity': [
+          'case',
+          ['>', ['get', 'weight'], 0], cfg.opacity * 0.82,
+          0.05,
         ],
-        'heatmap-color': [
-          'interpolate', ['linear'], ['heatmap-density'],
-          0, 'rgba(33, 102, 172, 0)',
-          0.2, 'rgb(103, 169, 207)',
-          0.4, 'rgb(209, 229, 240)',
-          0.6, 'rgb(253, 219, 199)',
-          0.8, 'rgb(239, 138, 98)',
-          1, 'rgb(178, 24, 43)',
-        ],
-        'heatmap-radius': [
-          'interpolate', ['linear'], ['zoom'],
-          4, 20,
-          7, 36,
-          10, 56,
-          14, 80,
-        ],
-        'heatmap-opacity': cfg.opacity,
       },
       layout: { visibility: cfg.visible ? 'visible' : 'none' },
     })
   }
 
-  // Pontos de centroide para identificação e interação
-  if (!map.getLayer(pointLayerId)) {
+  // Borda dos municípios
+  if (!map.getLayer(strokeId)) {
     map.addLayer({
-      id: pointLayerId,
-      type: 'circle',
+      id: strokeId,
+      type: 'line',
       source: sourceId,
-      minzoom: 6,
       paint: {
-        'circle-radius': [
+        'line-color': [
           'interpolate', ['linear'], ['get', 'weight'],
-          0, 4.0,
-          0.5, 8.0,
-          1, 14.0,
+          0,   '#94a3b8',
+          0.5, '#f87171',
+          1.0, '#7f1d1d',
         ],
-        'circle-color': [
-          'interpolate', ['linear'], ['get', 'weight'],
-          0, '#38bdf8',
-          0.3, '#34d399',
-          0.6, '#fbbf24',
-          1, '#ef4444',
-        ],
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 1.5,
-        'circle-opacity': [
+        'line-width': [
           'interpolate', ['linear'], ['zoom'],
-          6, 0.2,
-          8, 0.75,
-          11, 0.95,
+          4, 0.5,
+          8, 1.0,
+          12, 1.5,
         ],
-        'circle-stroke-opacity': [
-          'interpolate', ['linear'], ['zoom'],
-          6, 0.2,
-          8, 0.85,
-        ],
+        'line-opacity': 0.7,
       },
       layout: { visibility: cfg.visible ? 'visible' : 'none' },
     })
   }
 
   if (cfg.visible) {
-    updateSegurancaHeatmap()
+    updateSegurancaChoropleth()
+  }
+}
+
+// ——— Queimadas: Choropleth Municipal + Pontos MVT ——————————————————————————
+
+async function updateQueimadasChoropleth() {
+  if (!map || !mapStore.mapReady) return
+  const qCfg = layersStore.getLayer('queimadas')
+  if (!qCfg?.visible) return
+
+  try {
+    const params: Record<string, string | number | boolean> = {
+      metrica: filtersStore.queimadasMetrica,
+    }
+    if (filtersStore.queimadasAno !== null) params.ano = filtersStore.queimadasAno
+    if (filtersStore.queimadasMes !== null) params.mes = filtersStore.queimadasMes
+    if (filtersStore.queimadasBioma && filtersStore.queimadasBioma !== 'todos') {
+      params.bioma = filtersStore.queimadasBioma
+    }
+    if (filtersStore.queimadasApenasReferencia) {
+      params.apenas_referencia = true
+    }
+
+    const res = await axios.get(`${API}/features/queimadas/heatmap`, { params })
+    const source = map.getSource('source-queimadas-choropleth') as maplibregl.GeoJSONSource
+    if (source && res.data) {
+      source.setData(res.data)
+    }
+  } catch (e) {
+    console.warn('Erro ao atualizar choropleth de queimadas:', e)
+  }
+}
+
+function updateQueimadasPointsFilter() {
+  if (!map || !mapStore.mapReady) return
+  const circleId = 'queimadas-circle'
+  if (!map.getLayer(circleId)) return
+
+  const conditions: any[] = ['all']
+
+  if (filtersStore.queimadasBioma && filtersStore.queimadasBioma !== 'todos') {
+    conditions.push(['==', ['get', 'bioma'], filtersStore.queimadasBioma])
+  }
+  if (filtersStore.queimadasApenasReferencia) {
+    conditions.push(['==', ['get', 'is_referencia'], true])
+  }
+  if (filtersStore.queimadasAno !== null) {
+    conditions.push(['==', ['to-number', ['get', 'ano']], filtersStore.queimadasAno])
+  }
+  if (filtersStore.queimadasMes !== null) {
+    conditions.push(['==', ['to-number', ['get', 'mes']], filtersStore.queimadasMes])
+  }
+
+  if (conditions.length > 1) {
+    map.setFilter(circleId, conditions as any)
+  } else {
+    map.setFilter(circleId, null)
+  }
+}
+
+function addQueimadasLayers(cfg: LayerConfig) {
+  if (!map) return
+
+  // 1. Camada de Choropleth Municipal (GeoJSON)
+  const choroplethSourceId = 'source-queimadas-choropleth'
+  const choroplethId = 'queimadas-choropleth'
+  const strokeId = 'queimadas-stroke'
+
+  if (!map.getSource(choroplethSourceId)) {
+    map.addSource(choroplethSourceId, {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    })
+  }
+
+  if (!map.getLayer(choroplethId)) {
+    map.addLayer({
+      id: choroplethId,
+      type: 'fill',
+      source: choroplethSourceId,
+      maxzoom: 12,
+      paint: {
+        'fill-color': [
+          'interpolate', ['linear'], ['get', 'weight'],
+          0,    'rgba(254, 240, 138, 0.04)',
+          0.15, '#fef08a',
+          0.35, '#f59e0b',
+          0.6,  '#ea580c',
+          0.85, '#dc2626',
+          1.0,  '#7f1d1d',
+        ],
+        'fill-opacity': [
+          'case',
+          ['>', ['get', 'weight'], 0], cfg.opacity * 0.72,
+          0.04,
+        ],
+      },
+      layout: { visibility: cfg.visible ? 'visible' : 'none' },
+    })
+  }
+
+  if (!map.getLayer(strokeId)) {
+    map.addLayer({
+      id: strokeId,
+      type: 'line',
+      source: choroplethSourceId,
+      maxzoom: 12,
+      paint: {
+        'line-color': [
+          'interpolate', ['linear'], ['get', 'weight'],
+          0,   '#cbd5e1',
+          0.5, '#ea580c',
+          1.0, '#7f1d1d',
+        ],
+        'line-width': [
+          'interpolate', ['linear'], ['zoom'],
+          4, 0.5,
+          8, 1.0,
+          12, 1.5,
+        ],
+        'line-opacity': 0.65,
+      },
+      layout: { visibility: cfg.visible ? 'visible' : 'none' },
+    })
+  }
+
+  // 2. Camada MVT de Pontos Individuais de Focos
+  const mvtSourceId = `source-${cfg.id}`
+  const circleId = `${cfg.id}-circle`
+
+  if (!map.getSource(mvtSourceId)) {
+    map.addSource(mvtSourceId, {
+      type: 'vector',
+      tiles: [cfg.tileUrl],
+      scheme: 'xyz',
+      minzoom: cfg.minZoom,
+      maxzoom: cfg.maxZoom,
+    })
+  }
+
+  if (!map.getLayer(circleId)) {
+    map.addLayer({
+      id: circleId,
+      type: 'circle',
+      source: mvtSourceId,
+      'source-layer': 'queimadas',
+      minzoom: cfg.minZoom,
+      paint: {
+        'circle-radius': [
+          'interpolate', ['linear'], ['zoom'],
+          5, 2.5,
+          8, 4.2,
+          11, 6.5,
+          14, 9.5,
+          18, 14.0,
+        ],
+        'circle-color': [
+          'interpolate', ['linear'], ['coalesce', ['to-number', ['get', 'frp']], 15],
+          0,   '#fef08a',
+          25,  '#f59e0b',
+          60,  '#ea580c',
+          120, '#dc2626',
+          300, '#7f1d1d',
+        ],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': [
+          'interpolate', ['linear'], ['zoom'],
+          5, 0.4,
+          8, 0.8,
+          12, 1.5,
+        ],
+        'circle-opacity': cfg.opacity,
+      },
+      layout: { visibility: cfg.visible ? 'visible' : 'none' },
+    })
+  }
+
+  if (cfg.visible) {
+    updateQueimadasChoropleth()
+    updateQueimadasPointsFilter()
   }
 }
 
@@ -269,7 +424,12 @@ function addVectorLayer(cfg: LayerConfig) {
   if (!map) return
 
   if (cfg.id === 'seguranca') {
-    addSegurancaHeatmapLayer(cfg)
+    addSegurancaChoroplethLayer(cfg)
+    return
+  }
+
+  if (cfg.id === 'queimadas') {
+    addQueimadasLayers(cfg)
     return
   }
 
@@ -283,6 +443,7 @@ function addVectorLayer(cfg: LayerConfig) {
     map.addSource(sourceId, {
       type: 'vector',
       tiles: [cfg.tileUrl],
+      scheme: 'xyz',
       minzoom: cfg.minZoom,
       maxzoom: cfg.maxZoom,
     })
@@ -316,7 +477,7 @@ function addVectorLayer(cfg: LayerConfig) {
     return
   }
 
-  // Malha viária (linhas)
+  // Malha viária (linhas) — source-layer 'malha_viaria' conforme ST_AsMVT
   if (cfg.id === 'malha_viaria') {
     if (!map.getLayer(lineLayerId)) {
       map.addLayer({
@@ -325,7 +486,6 @@ function addVectorLayer(cfg: LayerConfig) {
         source: sourceId,
         'source-layer': 'malha_viaria',
         minzoom: cfg.minZoom,
-        maxzoom: cfg.maxZoom,
         paint: {
           'line-color': [
             'match', ['get', 'highway'],
@@ -334,17 +494,29 @@ function addVectorLayer(cfg: LayerConfig) {
             'primary', '#f59e0b',
             'secondary', '#10b981',
             'tertiary', '#06b6d4',
-            '#64748b'
+            '#94a3b8'
           ],
           'line-width': [
             'interpolate', ['linear'], ['zoom'],
-            7, 1.0,
-            11, 2.0,
-            15, 3.5
+            5, 0.8,
+            7, 1.2,
+            10, 2.0,
+            12, 2.8,
+            15, 4.0
           ],
-          'line-opacity': cfg.opacity,
+          'line-opacity': [
+            'interpolate', ['linear'], ['zoom'],
+            5, 0.65,
+            7, 0.8,
+            10, 0.9,
+            13, cfg.opacity,
+          ],
         },
-        layout: { visibility: cfg.visible ? 'visible' : 'none' },
+        layout: {
+          visibility: cfg.visible ? 'visible' : 'none',
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
       })
     }
     return
@@ -468,6 +640,20 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
             <span>População</span>
             <strong>${Number(props['pop_total'] ?? 0).toLocaleString('pt-BR')}</strong>
           </div>
+          <div class="clean-popup__row">
+            <span>Domicílios</span>
+            <strong>${Number(props['domicilios_total'] ?? 0).toLocaleString('pt-BR')}</strong>
+          </div>
+          ${props['renda_media_domicilio'] != null ? `
+          <div class="clean-popup__row">
+            <span>Renda Média</span>
+            <strong>R$ ${Number(props['renda_media_domicilio']).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+          </div>` : ''}
+          ${props['area_km2'] != null ? `
+          <div class="clean-popup__row">
+            <span>Área</span>
+            <strong>${Number(props['area_km2']).toFixed(2)} km²</strong>
+          </div>` : ''}
           ${props['dist_escola_km'] != null ? `
           <div class="clean-popup__row">
             <span>Escola mais próxima</span>
@@ -502,10 +688,13 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
   }
 
   if (layer === 'saude') {
+    const nome = (props['no_fantasia'] && String(props['no_fantasia']).trim())
+      || (props['no_razao_social'] && String(props['no_razao_social']).trim())
+      || 'Unidade de Saúde'
     return `
       <div class="clean-popup">
         <div class="clean-popup__badge" style="background: rgba(239, 68, 68, 0.12); color: #ef4444;">Saúde (CNES)</div>
-        <h4 class="clean-popup__title">${props['no_fantasia'] ?? 'Unidade de Saúde'}</h4>
+        <h4 class="clean-popup__title">${nome}</h4>
         <div class="clean-popup__rows">
           <div class="clean-popup__row">
             <span>Tipo</span>
@@ -516,9 +705,18 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
             <strong>${props['tp_gestao'] ?? '—'}</strong>
           </div>
           <div class="clean-popup__row">
+            <span>Município</span>
+            <strong>${props['no_municipio'] ?? '—'}</strong>
+          </div>
+          <div class="clean-popup__row">
             <span>Leitos</span>
             <strong>${props['qt_leitos_total'] ?? 0}</strong>
           </div>
+          ${props['qt_leitos_sus'] != null ? `
+          <div class="clean-popup__row">
+            <span>Leitos SUS</span>
+            <strong>${props['qt_leitos_sus']}</strong>
+          </div>` : ''}
         </div>
       </div>
     `
@@ -548,6 +746,7 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
     const crimeLabel = filtersStore.segurancaTipoCrime === 'todos' ? 'Todos os crimes' : filtersStore.segurancaTipoCrime
     const val = Number(props['val'] ?? props['qtd_ocorrencias'] ?? 0).toLocaleString('pt-BR')
     const vitimas = Number(props['qtd_vitimas'] ?? 0).toLocaleString('pt-BR')
+    const taxa = props['taxa_100k'] != null ? Number(props['taxa_100k']).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '—'
     const periodo = filtersStore.segurancaAno ? `${filtersStore.segurancaAno}` : 'Todos os anos'
     const mesTxt = filtersStore.segurancaMes ? ` · Mês ${filtersStore.segurancaMes}` : ''
 
@@ -561,6 +760,10 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
             <strong style="color: #ef4444; font-size: 0.95rem;">${val}</strong>
           </div>
           <div class="clean-popup__row">
+            <span>Taxa (por 100k hab.)</span>
+            <strong>${taxa}</strong>
+          </div>
+          <div class="clean-popup__row">
             <span>Tipo de Crime</span>
             <strong style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${crimeLabel}</strong>
           </div>
@@ -571,6 +774,97 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
           <div class="clean-popup__row">
             <span>Total de Vítimas</span>
             <strong>${vitimas}</strong>
+          </div>
+        </div>
+      </div>
+    `
+  }
+
+  if (layer === 'queimadas') {
+    // Se for ponto individual (possui satélite)
+    if (props['satelite']) {
+      const isRef = props['is_referencia'] === true || props['is_referencia'] === 'true'
+      const frpVal = props['frp'] != null && props['frp'] !== '' ? `${Number(props['frp']).toFixed(1)} MW` : '—'
+      const riscoVal = props['risco_fogo'] != null && props['risco_fogo'] !== '' ? Number(props['risco_fogo']).toFixed(2) : '—'
+      const diasChuva = props['numero_dias_sem_chuva'] != null && Number(props['numero_dias_sem_chuva']) >= 0
+        ? `${props['numero_dias_sem_chuva']} dias`
+        : '—'
+      const dataHora = props['data_hora_gmt']
+        ? String(props['data_hora_gmt']).replace('T', ' ').slice(0, 19)
+        : '—'
+
+      return `
+        <div class="clean-popup">
+          <div class="clean-popup__badge" style="background: rgba(234, 88, 12, 0.12); color: #ea580c;">Foco de Calor (INPE)</div>
+          <h4 class="clean-popup__title">${props['municipio'] ?? 'Mato Grosso'}</h4>
+          <div class="clean-popup__rows">
+            <div class="clean-popup__row">
+              <span>Satélite</span>
+              <strong>${props['satelite']}${isRef ? ' (Ref.)' : ''}</strong>
+            </div>
+            <div class="clean-popup__row">
+              <span>Data / Hora (GMT)</span>
+              <strong>${dataHora}</strong>
+            </div>
+            <div class="clean-popup__row">
+              <span>Bioma</span>
+              <strong>${props['bioma'] ?? '—'}</strong>
+            </div>
+            <div class="clean-popup__row">
+              <span>Potência (FRP)</span>
+              <strong style="color: #ea580c;">${frpVal}</strong>
+            </div>
+            <div class="clean-popup__row">
+              <span>Risco de Fogo</span>
+              <strong>${riscoVal}</strong>
+            </div>
+            <div class="clean-popup__row">
+              <span>Sem Chuva</span>
+              <strong>${diasChuva}</strong>
+            </div>
+          </div>
+        </div>
+      `
+    }
+
+    // Se for choropleth municipal
+    const metricaLabels: Record<string, string> = {
+      focos: 'Total de Focos',
+      frp_medio: 'FRP Médio',
+      risco_medio: 'Risco Médio',
+    }
+    const mLabel = metricaLabels[filtersStore.queimadasMetrica] || 'Total de Focos'
+    const focosTot = Number(props['val'] ?? props['total_focos'] ?? 0).toLocaleString('pt-BR')
+    const focosRef = Number(props['focos_referencia'] ?? 0).toLocaleString('pt-BR')
+    const frpMed = props['frp_medio'] != null ? `${Number(props['frp_medio']).toFixed(1)} MW` : '—'
+    const riscoMed = props['risco_fogo_medio'] != null ? Number(props['risco_fogo_medio']).toFixed(2) : '—'
+    const anoTxt = filtersStore.queimadasAno ? `${filtersStore.queimadasAno}` : 'Todos os anos'
+    const mesTxt = filtersStore.queimadasMes ? ` · Mês ${filtersStore.queimadasMes}` : ''
+
+    return `
+      <div class="clean-popup">
+        <div class="clean-popup__badge" style="background: rgba(234, 88, 12, 0.12); color: #ea580c;">Queimadas no Município</div>
+        <h4 class="clean-popup__title">${props['nm_municipio'] ?? 'Município'}</h4>
+        <div class="clean-popup__rows">
+          <div class="clean-popup__row">
+            <span>${mLabel}</span>
+            <strong style="color: #ea580c; font-size: 0.95rem;">${focosTot}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Satélite Referência</span>
+            <strong>${focosRef}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>FRP Médio</span>
+            <strong>${frpMed}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Risco de Fogo Médio</span>
+            <strong>${riscoMed}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Período</span>
+            <strong>${anoTxt}${mesTxt}</strong>
           </div>
         </div>
       </div>
@@ -640,18 +934,49 @@ watch(
     if (!map || !mapStore.mapReady) return
     layers.forEach((cfg) => {
       if (cfg.id === 'seguranca') {
-        const heatId = 'seguranca-heat'
-        const ptId = 'seguranca-point'
+        const choroplethId = 'seguranca-choropleth'
+        const strokeId = 'seguranca-stroke'
         const vis = cfg.visible ? 'visible' : 'none'
-        if (map!.getLayer(heatId)) {
-          map!.setLayoutProperty(heatId, 'visibility', vis)
-          map!.setPaintProperty(heatId, 'heatmap-opacity', cfg.opacity)
+        if (map!.getLayer(choroplethId)) {
+          map!.setLayoutProperty(choroplethId, 'visibility', vis)
+          map!.setPaintProperty(choroplethId, 'fill-opacity', [
+            'case',
+            ['>', ['get', 'weight'], 0], cfg.opacity * 0.82,
+            0.05,
+          ])
         }
-        if (map!.getLayer(ptId)) {
-          map!.setLayoutProperty(ptId, 'visibility', vis)
+        if (map!.getLayer(strokeId)) {
+          map!.setLayoutProperty(strokeId, 'visibility', vis)
         }
         if (cfg.visible) {
-          updateSegurancaHeatmap()
+          updateSegurancaChoropleth()
+        }
+        return
+      }
+
+      if (cfg.id === 'queimadas') {
+        const choroplethId = 'queimadas-choropleth'
+        const strokeId = 'queimadas-stroke'
+        const circleId = 'queimadas-circle'
+        const vis = cfg.visible ? 'visible' : 'none'
+        if (map!.getLayer(choroplethId)) {
+          map!.setLayoutProperty(choroplethId, 'visibility', vis)
+          map!.setPaintProperty(choroplethId, 'fill-opacity', [
+            'case',
+            ['>', ['get', 'weight'], 0], cfg.opacity * 0.72,
+            0.04,
+          ])
+        }
+        if (map!.getLayer(strokeId)) {
+          map!.setLayoutProperty(strokeId, 'visibility', vis)
+        }
+        if (map!.getLayer(circleId)) {
+          map!.setLayoutProperty(circleId, 'visibility', vis)
+          map!.setPaintProperty(circleId, 'circle-opacity', cfg.opacity)
+        }
+        if (cfg.visible) {
+          updateQueimadasChoropleth()
+          updateQueimadasPointsFilter()
         }
         return
       }
@@ -661,13 +986,37 @@ watch(
       const circleId = `${cfg.id}-circle`
 
       const vis = cfg.visible ? 'visible' : 'none'
+
+      // Polígonos (fill)
       if (map!.getLayer(fillId)) {
         map!.setLayoutProperty(fillId, 'visibility', vis)
-        map!.setLayoutProperty(lineId, 'visibility', vis)
         if (cfg.id !== 'municipios') {
           map!.setPaintProperty(fillId, 'fill-opacity', cfg.opacity)
+          if (cfg.id === 'setores') {
+            map!.setPaintProperty(
+              fillId,
+              'fill-color',
+              filtersStore.getAccessibilityColorExpression(filtersStore.accessibilityThresholdKm)
+            )
+          }
         }
       }
+
+      // Linhas (malha viária, contornos de municípios e setores)
+      if (map!.getLayer(lineId)) {
+        map!.setLayoutProperty(lineId, 'visibility', vis)
+        if (cfg.id === 'malha_viaria') {
+          map!.setPaintProperty(lineId, 'line-opacity', [
+            'interpolate', ['linear'], ['zoom'],
+            5, 0.65 * cfg.opacity,
+            7, 0.8 * cfg.opacity,
+            10, 0.9 * cfg.opacity,
+            13, cfg.opacity,
+          ])
+        }
+      }
+
+      // Círculos (pontos de escolas, saúde)
       if (map!.getLayer(circleId)) {
         map!.setLayoutProperty(circleId, 'visibility', vis)
         map!.setPaintProperty(circleId, 'circle-opacity', cfg.opacity)
@@ -677,7 +1026,7 @@ watch(
   { deep: true }
 )
 
-// Filtros de segurança SINESP → atualiza dados do heatmap
+// Filtros de segurança SINESP → atualiza dados do choropleth
 watch(
   [
     () => filtersStore.segurancaMetrica,
@@ -686,7 +1035,131 @@ watch(
     () => filtersStore.segurancaMes,
   ],
   () => {
-    updateSegurancaHeatmap()
+    if (!mapStore.mapReady) return
+    updateSegurancaChoropleth()
+  }
+)
+
+// Filtros de queimadas INPE → atualiza choropleth e pontos
+watch(
+  [
+    () => filtersStore.queimadasMetrica,
+    () => filtersStore.queimadasAno,
+    () => filtersStore.queimadasMes,
+    () => filtersStore.queimadasBioma,
+    () => filtersStore.queimadasApenasReferencia,
+  ],
+  () => {
+    if (!mapStore.mapReady) return
+    updateQueimadasChoropleth()
+    updateQueimadasPointsFilter()
+  }
+)
+
+// ─── Filtros de Escolas (Rede + Etapas de Ensino) ───────────────────────────
+function updateEscolasFilter() {
+  if (!map || !mapStore.mapReady) return
+  const circleId = 'escolas-circle'
+  if (!map.getLayer(circleId)) return
+
+  const conditions: any[] = ['all']
+
+  // 1. Rede de ensino
+  const rede = filtersStore.educationNetwork
+  const depMap: Record<string, number[]> = {
+    todas: [1, 2, 3, 4],
+    publica: [1, 2, 3],
+    federal: [1],
+    estadual: [2],
+    municipal: [3],
+    privada: [4],
+  }
+  const deps = depMap[rede] ?? [1, 2, 3, 4]
+  if (deps.length < 4) {
+    conditions.push(['in', ['to-number', ['get', 'tp_dependencia']], ['literal', deps]])
+  }
+
+  // 2. Etapas de ensino (booleanos da tabela de escolas)
+  const stages = filtersStore.educationStages
+  if (stages.length > 0) {
+    const stageConditions: any[] = ['any']
+    stages.forEach((stage) => {
+      if (stage === 'creche') {
+        stageConditions.push(['==', ['get', 'in_inf_creche'], true])
+      } else if (stage === 'pre_escola') {
+        stageConditions.push(['==', ['get', 'in_inf_pre_escola'], true])
+      } else if (stage === 'fund_ai') {
+        stageConditions.push(['==', ['get', 'in_fund_anos_iniciais'], true])
+      } else if (stage === 'fund_af') {
+        stageConditions.push(['==', ['get', 'in_fund_anos_finais'], true])
+      } else if (stage === 'medio') {
+        stageConditions.push(['any', ['==', ['get', 'in_medio_regular'], true], ['==', ['get', 'in_medio_integrado'], true]])
+      } else if (stage === 'eja') {
+        stageConditions.push(['==', ['get', 'in_eja'], true])
+      }
+    })
+    conditions.push(stageConditions)
+  }
+
+  if (conditions.length > 1) {
+    map.setFilter(circleId, conditions as any)
+  } else {
+    map.setFilter(circleId, null)
+  }
+}
+
+watch(
+  [() => filtersStore.educationNetwork, () => filtersStore.educationStages],
+  () => {
+    updateEscolasFilter()
+  },
+  { deep: true }
+)
+
+// Filtro de tipo de unidade de saúde → aplica filter MapLibre na camada de saúde
+watch(
+  () => filtersStore.healthType,
+  (tipo) => {
+    if (!map || !mapStore.mapReady) return
+    const circleId = 'saude-circle'
+    if (!map.getLayer(circleId)) return
+
+    // Mapeamento de HealthType para tp_unidade (códigos CNES)
+    const tipoMap: Record<string, number[]> = {
+      todos: [],
+      hospital: [5, 7, 15],           // Hospital Geral, Especializado, Misto
+      ubs: [1, 2],                    // Posto de Saúde, Centro/UBS
+      policlinica: [4, 36],           // Policlínica, Clínica Especializada
+      pronto_socorro: [20, 21, 73],   // Pronto Socorro, Pronto Atendimento (UPA)
+      consultorio: [22],              // Consultório
+    }
+    const tipos = tipoMap[tipo] ?? []
+    if (tipos.length === 0) {
+      map.setFilter(circleId, null)
+    } else {
+      map.setFilter(circleId, [
+        'any',
+        ['in', ['to-number', ['get', 'tp_unidade']], ['literal', tipos]],
+        ['in', ['get', 'tp_unidade'], ['literal', tipos]],
+      ])
+    }
+  }
+)
+
+// Filtro de tipo de via → aplica filter MapLibre na camada de malha viária
+watch(
+  () => filtersStore.roadType,
+  (tipo) => {
+    if (!map || !mapStore.mapReady) return
+    const lineId = 'malha_viaria-line'
+    if (!map.getLayer(lineId)) return
+
+    if (tipo === 'todos') {
+      map.setFilter(lineId, null)
+    } else {
+      // Inclui links da mesma classe (ex: motorway_link para motorway)
+      map.setFilter(lineId, ['in', ['get', 'highway'], ['literal', [tipo, `${tipo}_link`]]])
+    }
   }
 )
 
