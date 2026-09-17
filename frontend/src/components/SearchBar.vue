@@ -7,7 +7,7 @@
         ref="inputRef"
         v-model="query"
         type="search"
-        placeholder="Buscar município, escola ou setor..."
+        placeholder="..."
         class="search-bar__input"
         autocomplete="off"
         @focus="focused = true"

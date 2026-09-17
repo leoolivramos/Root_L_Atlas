@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { ref, readonly } from 'vue'
 import type { MapViewport } from '@/types/atlas'
 
-export type BasemapId = 'light' | 'dark' | 'osm' | 'satellite'
+export type BasemapId = 'osm' | 'light' | 'dark' | 'satellite'
 
 export interface BasemapConfig {
   id: BasemapId
@@ -13,6 +13,12 @@ export interface BasemapConfig {
 }
 
 export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
+  osm: {
+    id: 'osm',
+    label: 'Natural (OSM)',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '© OpenStreetMap contributors',
+  },
   light: {
     id: 'light',
     label: 'Claro',
@@ -24,12 +30,6 @@ export const BASEMAPS: Record<BasemapId, BasemapConfig> = {
     label: 'Escuro',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles © Esri — Esri, DeLorme, NAVTEQ',
-  },
-  osm: {
-    id: 'osm',
-    label: 'Natural (OSM)',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '© OpenStreetMap contributors',
   },
   satellite: {
     id: 'satellite',
@@ -50,7 +50,7 @@ export const useMapStore = defineStore('map', () => {
 
   const mapReady = ref(false)
   const is3D = ref(false)
-  const activeBasemap = ref<BasemapId>('light')
+  const activeBasemap = ref<BasemapId>('osm')
 
   // Painéis flutuantes (para manter o mapa limpo e desobstruído)
   const showLayers = ref(true)

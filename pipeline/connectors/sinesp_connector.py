@@ -83,8 +83,9 @@ class SINESPConnector(BaseConnector):
         records = []
         # Gera série para os anos 2023 e 2024 (meses 1 a 12)
         rng = np.random.default_rng(seed=51)  # Seed reproduzível para MT
-
-        for ano in [2023, 2024]:
+        
+        anos = [2020, 2021, 2022, 2023, 2024]
+        for ano in anos:
             meses = range(1, 13) if ano == 2023 else range(1, 10)  # 2024 até setembro
             for mes in meses:
                 for _, mun in mun_df.iterrows():

@@ -118,9 +118,9 @@ const requestsStore = useRequestsStore()
 const selectedFeature = ref<SelectedFeature | null>(null)
 
 const basemapsList: { id: BasemapId; label: string }[] = [
+  { id: 'osm', label: 'Natural' },
   { id: 'light', label: 'Claro' },
   { id: 'dark', label: 'Escuro' },
-  { id: 'osm', label: 'Natural' },
   { id: 'satellite', label: 'Satélite' },
 ]
 
