@@ -94,6 +94,7 @@ function getLayerIcon(layerId: LayerId): IconName {
   if (layerId === 'setores') return 'setor'
   if (layerId === 'saude') return 'saude'
   if (layerId === 'seguranca') return 'shield'
+  if (layerId === 'queimadas') return 'flame'
   if (layerId === 'malha_viaria' || layerId === 'viaria') return 'viaria'
   return 'layers'
 }

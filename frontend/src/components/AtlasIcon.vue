@@ -141,6 +141,12 @@
       <line x1="12" y1="13" x2="12" y2="17" />
     </template>
 
+    <!-- Fogo / Queimadas / Flame -->
+    <template v-else-if="name === 'flame' || name === 'fire'">
+      <path d="M8.5 14.5A2.5 2.5 0 0 0 11 17c1.38 0 2.5-1.12 2.5-2.5 0-.61-.22-1.17-.58-1.61L12 12c-1.5-1.5-2-3.5-1-5.5.5-1 1.5-2 1.5-2s-4 1-5 5.5c-.34 1.53-.12 3.12.62 4.48.56-.58.88-1.37.88-2.24 0-.3-.04-.59-.12-.86.37.42.62.96.62 1.56z" />
+      <path d="M12 2c1 3 4 4.5 5 7.5 1.2 3.6-.5 7.5-3.5 9.5-3 2-7.5 1-9-2.5-1-2.3-.5-5 1-7 .5 2 1.5 3 2.5 3.5C7.5 11 8 8 12 2z" />
+    </template>
+
     <!-- Fallback -->
     <template v-else>
       <circle cx="12" cy="12" r="8" />
@@ -178,6 +184,8 @@ export type IconName =
   | 'chevron-down'
   | 'document'
   | 'lineage'
+  | 'flame'
+  | 'fire'
 
 withDefaults(
   defineProps<{

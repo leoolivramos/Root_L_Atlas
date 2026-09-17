@@ -8,7 +8,7 @@ export interface MapViewport {
   pitch: number
 }
 
-export type LayerId = 'municipios' | 'setores' | 'escolas' | 'saude' | 'viaria' | 'malha_viaria' | 'seguranca'
+export type LayerId = 'municipios' | 'setores' | 'escolas' | 'saude' | 'viaria' | 'malha_viaria' | 'seguranca' | 'queimadas'
 
 export interface LayerConfig {
   id: LayerId

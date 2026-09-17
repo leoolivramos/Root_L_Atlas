@@ -100,6 +100,39 @@
           </div>
         </div>
 
+        <!-- Queimadas INPE (municípios ou ponto de queimadas) -->
+        <div v-if="(feature.layer === 'municipios' || feature.layer === 'queimadas') && munQueimadas" class="accessibility-card">
+          <div class="accessibility-card__header">
+            <div class="accessibility-card__title">
+              <AtlasIcon name="flame" :size="14" custom-class="acc-icon acc-icon--fire" />
+              <span>Focos de Queimadas (INPE)</span>
+            </div>
+            <span class="accessibility-card__method">{{ munQueimadas.ano ?? 'Consolidado' }}</span>
+          </div>
+          <div class="accessibility-card__body">
+            <div class="accessibility-card__row">
+              <span>Total de Focos</span>
+              <strong style="color: #ea580c;">{{ fmtNum(munQueimadas.total_focos) }}</strong>
+            </div>
+            <div class="accessibility-card__row">
+              <span>Satélite de Referência</span>
+              <strong>{{ fmtNum(munQueimadas.focos_referencia) }}</strong>
+            </div>
+            <div class="accessibility-card__row">
+              <span>FRP Médio</span>
+              <strong>{{ munQueimadas.frp_medio != null ? `${Number(munQueimadas.frp_medio).toFixed(1)} MW` : '—' }}</strong>
+            </div>
+            <div class="accessibility-card__row">
+              <span>Risco de Fogo Médio</span>
+              <strong>{{ munQueimadas.risco_fogo_medio != null ? Number(munQueimadas.risco_fogo_medio).toFixed(2) : '—' }}</strong>
+            </div>
+            <div class="accessibility-card__row">
+              <span>Dias sem Chuva (Médio)</span>
+              <strong>{{ munQueimadas.dias_sem_chuva_medio != null ? `${Number(munQueimadas.dias_sem_chuva_medio).toFixed(0)} dias` : '—' }}</strong>
+            </div>
+          </div>
+        </div>
+
         <!-- Atributos detalhados -->
         <details class="feature-attrs" open>
           <summary class="feature-attrs__summary">
@@ -172,6 +205,7 @@ const requestsStore = useRequestsStore()
 const accessMetrics = ref<AccessibilityMetrics | null>(null)
 const munSeguranca = ref<{ total_ocorrencias: number; total_vitimas: number; crimes: Array<{ tipo_crime: string; total_ocorrencias: number }> } | null>(null)
 const munCobertura = ref<{ total_area_ha: number; classes: Array<{ nm_classe: string; area_ha: number; classe_mapbiomas: number }> } | null>(null)
+const munQueimadas = ref<{ total_focos: number; focos_referencia: number; frp_medio: number; risco_fogo_medio: number; dias_sem_chuva_medio: number; ano?: number } | null>(null)
 
 const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -182,6 +216,7 @@ const LAYER_ICON_MAP: Record<string, IconName> = {
   saude: 'saude',
   malha_viaria: 'viaria',
   seguranca: 'shield',
+  queimadas: 'flame',
 }
 
 const LAYER_LABELS: Record<string, string> = {
@@ -191,6 +226,7 @@ const LAYER_LABELS: Record<string, string> = {
   saude: 'Saúde (CNES)',
   malha_viaria: 'Malha Viária (OSM)',
   seguranca: 'Segurança (SINESP)',
+  queimadas: 'Queimadas (INPE)',
 }
 
 const layerIconName = computed<IconName>(() => LAYER_ICON_MAP[props.feature?.layer ?? ''] ?? 'pin')
@@ -200,6 +236,7 @@ const primaryName = computed(() => {
   const p = props.feature?.properties
   return (
     p?.['nm_municipio'] ??
+    p?.['municipio'] ??
     p?.['no_entidade'] ??
     p?.['no_fantasia'] ??
     p?.['name'] ??
@@ -217,6 +254,7 @@ const secondaryInfo = computed(() => {
   if (props.feature?.layer === 'saude') return p?.['nm_tp_unidade'] as string
   if (props.feature?.layer === 'malha_viaria') return (p?.['highway'] as string)?.toUpperCase()
   if (props.feature?.layer === 'seguranca') return `Ocorrências SINESP · ${p?.['nm_municipio'] || ''}`
+  if (props.feature?.layer === 'queimadas') return `Foco · ${p?.['bioma'] || ''} · Satélite ${p?.['satelite'] || ''}`
   return null
 })
 
@@ -267,6 +305,13 @@ const quickMetrics = computed(() => {
       { label: 'Índice Relativo', value: p['weight'] != null ? `${Math.round(Number(p['weight']) * 100)}%` : '—' },
     ]
   }
+  if (props.feature?.layer === 'queimadas') {
+    return [
+      { label: 'Satélite', value: (p['satelite'] as string) || '—' },
+      { label: 'FRP (MW)', value: p['frp'] != null ? `${Number(p['frp']).toFixed(1)} MW` : '—' },
+      { label: 'Risco Fogo', value: p['risco_fogo'] != null ? Number(p['risco_fogo']).toFixed(2) : '—' },
+    ]
+  }
   return []
 })
 
@@ -307,6 +352,7 @@ watch(
     accessMetrics.value = null
     munSeguranca.value = null
     munCobertura.value = null
+    munQueimadas.value = null
 
     if (!feat) return
 
@@ -322,15 +368,17 @@ watch(
       } catch {
         requestsStore.setError('accessibility', 'Dados de acessibilidade indisponíveis')
       }
-    } else if (feat.layer === 'municipios' || feat.layer === 'seguranca') {
+    } else if (feat.layer === 'municipios' || feat.layer === 'seguranca' || feat.layer === 'queimadas') {
       try {
-        const munId = feat.properties?.['cd_municipio'] || feat.id
-        const [resSeg, resCob] = await Promise.all([
+        const munId = feat.properties?.['cd_municipio'] || feat.properties?.['municipio_id'] || feat.id
+        const [resSeg, resCob, resQueim] = await Promise.all([
           axios.get(`${API}/features/municipio/${munId}/seguranca`).catch(() => null),
           axios.get(`${API}/features/municipio/${munId}/cobertura_solo`).catch(() => null),
+          axios.get(`${API}/features/municipio/${munId}/queimadas`).catch(() => null),
         ])
         if (resSeg?.data) munSeguranca.value = resSeg.data
         if (resCob?.data) munCobertura.value = resCob.data
+        if (resQueim?.data) munQueimadas.value = resQueim.data
       } catch {
         // Ignora erros não impeditivos
       }
@@ -614,5 +662,9 @@ dd {
 .slide-right-leave-to {
   transform: translateX(100%);
   opacity: 0;
+}
+
+.acc-icon--fire {
+  color: #ea580c !important;
 }
 </style>
