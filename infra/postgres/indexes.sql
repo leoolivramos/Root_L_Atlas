@@ -149,8 +149,8 @@ BEGIN
             s.nm_tipo_setor,
             s.pop_total,
             s.domicilios_total,
-            s.renda_media_domicilio,
-            a.distancia_eucl_km    AS dist_escola_km,
+            s.renda_media_domicilio::float8 AS renda_media_domicilio,
+            COALESCE(a.distancia_eucl_km::float8, -1.0) AS dist_escola_km,
             a.qt_escolas_5km,
             a.qt_escolas_publicas_5km,
             -- Simplificação adaptativa ao zoom
@@ -197,9 +197,13 @@ BEGIN
             e.tp_dependencia,
             e.nm_dependencia,
             e.no_municipio,
+            e.in_inf_creche,
+            e.in_inf_pre_escola,
             e.in_fund_anos_iniciais,
             e.in_fund_anos_finais,
             e.in_medio_regular,
+            e.in_medio_integrado,
+            e.in_eja,
             e.qt_mat_bas,
             ST_AsMVTGeom(
                 ST_Transform(e.geom, 3857),
@@ -272,9 +276,13 @@ BEGIN
         SELECT
             es.co_cnes,
             es.no_fantasia,
+            es.no_razao_social,
+            es.tp_unidade,
             es.nm_tp_unidade,
             es.tp_gestao,
+            es.qt_leitos_sus,
             es.qt_leitos_total,
+            es.no_municipio,
             ST_AsMVTGeom(
                 ST_Transform(es.geom, 3857),
                 ST_TileEnvelope(p_z, p_x, p_y),
@@ -288,3 +296,125 @@ BEGIN
     RETURN COALESCE(v_tile, ''::BYTEA);
 END;
 $$ LANGUAGE plpgsql STABLE PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION atlas.get_mvt_malha_viaria(
+    p_z INTEGER,
+    p_x INTEGER,
+    p_y INTEGER
+)
+RETURNS BYTEA AS $$
+DECLARE
+    v_tile BYTEA;
+BEGIN
+    IF p_z < 5 THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT ST_AsMVT(q.*, 'malha_viaria', 4096, 'geom_mvt')
+    INTO v_tile
+    FROM (
+        SELECT
+            v.osm_id,
+            v.highway,
+            v.name,
+            v.oneway,
+            v.maxspeed,
+            v.surface,
+            ST_AsMVTGeom(
+                ST_Transform(v.geom, 3857),
+                ST_TileEnvelope(p_z, p_x, p_y),
+                4096, 64, TRUE
+            ) AS geom_mvt
+        FROM atlas.malha_viaria_osm v
+        WHERE v.geom && ST_Transform(ST_TileEnvelope(p_z, p_x, p_y, margin => 0.03125), 4326)
+          AND (
+              -- Zoom 11+: todas as vias
+              p_z >= 11
+              -- Zoom 8 a 10: rodovias, arteriais e coletoras (secundárias e terciárias)
+              OR (p_z >= 8 AND v.highway IN ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'))
+              -- Zoom 5 a 7: rodovias principais federais e estaduais
+              OR (p_z >= 5 AND v.highway IN ('motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'))
+          )
+    ) q
+    WHERE q.geom_mvt IS NOT NULL;
+
+    RETURN COALESCE(v_tile, ''::BYTEA);
+END;
+$$ LANGUAGE plpgsql STABLE PARALLEL SAFE;
+
+-- ────────────────────────────────────────────────────────────
+-- ÍNDICES — Focos de Queimadas (INPE)
+-- ────────────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_focos_geom
+    ON atlas.focos_queimadas USING GIST (geom);
+
+CREATE INDEX IF NOT EXISTS idx_focos_co_mun_ano_mes
+    ON atlas.focos_queimadas (co_municipio, ano, mes);
+
+CREATE INDEX IF NOT EXISTS idx_focos_ano_mes
+    ON atlas.focos_queimadas (ano, mes);
+
+CREATE INDEX IF NOT EXISTS idx_focos_bioma
+    ON atlas.focos_queimadas (bioma);
+
+CREATE INDEX IF NOT EXISTS idx_focos_is_ref
+    ON atlas.focos_queimadas (is_referencia);
+
+CREATE INDEX IF NOT EXISTS idx_focos_satelite
+    ON atlas.focos_queimadas (satelite);
+
+CREATE INDEX IF NOT EXISTS idx_focos_data_hora
+    ON atlas.focos_queimadas (data_hora_gmt);
+
+-- ────────────────────────────────────────────────────────────
+-- FUNÇÃO MVT: get_mvt_queimadas
+-- Gera mosaico vetorial de focos de queimadas para MapLibre
+-- ────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION atlas.get_mvt_queimadas(
+    p_z INTEGER,
+    p_x INTEGER,
+    p_y INTEGER
+)
+RETURNS BYTEA AS $$
+DECLARE
+    v_tile BYTEA;
+BEGIN
+    IF p_z < 5 THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT ST_AsMVT(q.*, 'queimadas', 4096, 'geom_mvt')
+    INTO v_tile
+    FROM (
+        SELECT
+            f.id,
+            to_char(f.data_hora_gmt, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS data_hora_gmt,
+            f.ano,
+            f.mes,
+            f.dia,
+            f.satelite,
+            f.is_referencia,
+            f.municipio,
+            f.co_municipio,
+            f.bioma,
+            f.numero_dias_sem_chuva,
+            f.precipitacao::float8 AS precipitacao,
+            f.risco_fogo::float8 AS risco_fogo,
+            f.frp::float8 AS frp,
+            ST_AsMVTGeom(
+                ST_Transform(f.geom, 3857),
+                ST_TileEnvelope(p_z, p_x, p_y),
+                4096, 64, TRUE
+            ) AS geom_mvt
+        FROM atlas.focos_queimadas f
+        WHERE f.geom && ST_Transform(ST_TileEnvelope(p_z, p_x, p_y, margin => 0.03125), 4326)
+          -- Em zooms menores que 8, priorizar satélite de referência ou focos de alta intensidade (FRP >= 30)
+          AND (p_z >= 8 OR f.is_referencia = TRUE OR f.frp >= 30.0)
+    ) q
+    WHERE q.geom_mvt IS NOT NULL;
+
+    RETURN COALESCE(v_tile, ''::BYTEA);
+END;
+$$ LANGUAGE plpgsql STABLE PARALLEL SAFE;
+
+

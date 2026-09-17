@@ -6,7 +6,7 @@ AS $$
 DECLARE
     v_tile BYTEA;
 BEGIN
-    IF p_z < 7 THEN
+    IF p_z < 5 THEN
         RETURN NULL;
     END IF;
 
@@ -27,7 +27,14 @@ BEGIN
             ) AS geom_mvt
         FROM atlas.malha_viaria_osm v
         WHERE v.geom && ST_Transform(ST_TileEnvelope(p_z, p_x, p_y, margin => 0.03125), 4326)
-          AND (p_z >= 11 OR v.highway IN ('motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'))
+          AND (
+              -- Zoom 11+: todas as vias
+              p_z >= 11
+              -- Zoom 8 a 10: rodovias, arteriais e coletoras (secundárias e terciárias)
+              OR (p_z >= 8 AND v.highway IN ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link'))
+              -- Zoom 5 a 7: rodovias principais federais e estaduais
+              OR (p_z >= 5 AND v.highway IN ('motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'))
+          )
     ) q
     WHERE q.geom_mvt IS NOT NULL;
 

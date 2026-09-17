@@ -31,7 +31,8 @@ LAYER_FUNCTIONS = {
     "setores": ("atlas.get_mvt_setores", settings.mvt_zoom_setores_min),
     "escolas": ("atlas.get_mvt_escolas", settings.mvt_zoom_pontos_min),
     "saude": ("atlas.get_mvt_saude", settings.mvt_zoom_pontos_min),
-    "malha_viaria": ("atlas.get_mvt_malha_viaria", 7),
+    "malha_viaria": ("atlas.get_mvt_malha_viaria", 5),
+    "queimadas": ("atlas.get_mvt_queimadas", 5),
 }
 
 CONTENT_TYPE_MVT = "application/vnd.mapbox-vector-tile"
@@ -98,24 +99,25 @@ async def get_tile(
 
     tile_data: bytes | None = row[0] if row else None
 
-    if not tile_data:
+    # A função PostGIS pode retornar b'' (bytes vazio) quando não há feições no tile.
+    # Tratamos len(tile_data) == 0 como tile vazio → 204 No Content.
+    if not tile_data or len(tile_data) == 0:
         return Response(
             content=b"",
             status_code=204,
             headers=_cache_headers(max_age=300),
         )
 
-    import gzip
-    compressed_tile = gzip.compress(tile_data)
-
+    # Servir o tile MVT bruto (sem gzip) — MapLibre GL lê bytes MVT diretamente.
+    # Content-Encoding: gzip causa falhas silenciosas com alguns clientes/proxies.
     return Response(
-        content=compressed_tile,
+        content=tile_data,
         status_code=200,
         media_type=CONTENT_TYPE_MVT,
         headers={
             **_cache_headers(max_age=settings.tile_cache_max_age),
-            "Content-Encoding": "gzip",
             "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "*",
         },
     )
 

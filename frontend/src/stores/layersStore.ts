@@ -20,10 +20,10 @@ const DEFAULT_LAYERS: LayerConfig[] = [
     id: 'setores',
     label: 'Setores Censitários',
     tileUrl: `${API}/tiles/setores/{z}/{x}/{y}`,
-    minZoom: 7,
+    minZoom: 4,
     maxZoom: 18,
     visible: false,
-    opacity: 0.65,
+    opacity: 0.4,
     color: '#8b5cf6',
   },
   {
@@ -50,7 +50,7 @@ const DEFAULT_LAYERS: LayerConfig[] = [
     id: 'malha_viaria',
     label: 'Malha Viária (OSM)',
     tileUrl: `${API}/tiles/malha_viaria/{z}/{x}/{y}`,
-    minZoom: 7,
+    minZoom: 5,
     maxZoom: 18,
     visible: false,
     opacity: 0.75,
@@ -65,6 +65,16 @@ const DEFAULT_LAYERS: LayerConfig[] = [
     visible: false,
     opacity: 0.85,
     color: '#ef4444',
+  },
+  {
+    id: 'queimadas',
+    label: 'Queimadas (INPE)',
+    tileUrl: `${API}/tiles/queimadas/{z}/{x}/{y}`,
+    minZoom: 5,
+    maxZoom: 18,
+    visible: false,
+    opacity: 0.9,
+    color: '#f97316',
   },
 ]
 
