@@ -389,11 +389,14 @@ async def get_seguranca_heatmap(
                     ROUND((COALESCE(st.val, 0)::numeric / m.populacao_2022 * 100000), 1)::float
                 ELSE 0.0
             END AS taxa_100k,
-            ST_AsGeoJSON(m.centroide, 6)::json AS geometry
+            -- Polígono simplificado do município (tolerância 0.01° ≈ ~1 km)
+            -- Necessário para renderização como camada fill (choropleth) no MapLibre.
+            -- NÃO usar centroide — fill layer requer geometria poligonal.
+            ST_AsGeoJSON(ST_SimplifyPreserveTopology(m.geom, 0.01), 6)::json AS geometry
         FROM atlas.municipios_mt m
         LEFT JOIN stats st ON st.co_municipio = m.cd_municipio
         CROSS JOIN max_val mv
-        WHERE m.centroide IS NOT NULL
+        WHERE m.geom IS NOT NULL
         ORDER BY val DESC
     """
 
@@ -565,3 +568,293 @@ async def get_features_in_bbox(
             ) if len(features) == limit else None,
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Endpoints de Queimadas (INPE BDQueimadas)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/queimadas/heatmap",
+    summary="Choropleth Municipal de Queimadas (GeoJSON)",
+    response_class=ORJSONResponse,
+)
+async def get_queimadas_heatmap(
+    ano: Annotated[int | None, Query(description="Ano de referência")] = None,
+    mes: Annotated[int | None, Query(ge=1, le=12, description="Mês de referência")] = None,
+    bioma: Annotated[str | None, Query(description="Bioma (Amazônia, Cerrado, Pantanal)")] = None,
+    apenas_referencia: Annotated[bool, Query(description="Filtrar apenas satélite de referência (AQUA)")] = False,
+    metrica: Annotated[str, Query(description="Métrica: focos, frp_medio, risco_medio")] = "focos",
+) -> dict:
+    """
+    Retorna GeoJSON dos municípios de MT com agregação de focos de queimadas.
+    Permite alternar entre total de focos, FRP médio e risco de fogo médio.
+    """
+    where_clauses = ["1=1"]
+    params: list[Any] = []
+    p_idx = 1
+
+    if ano is not None:
+        where_clauses.append(f"q.ano = ${p_idx}")
+        params.append(ano)
+        p_idx += 1
+
+    if mes is not None:
+        where_clauses.append(f"q.mes = ${p_idx}")
+        params.append(mes)
+        p_idx += 1
+
+    if bioma and bioma.lower() not in ("todos", "all", ""):
+        where_clauses.append(f"q.bioma ILIKE ${p_idx}")
+        params.append(f"%{bioma}%")
+        p_idx += 1
+
+    if apenas_referencia:
+        where_clauses.append("q.is_referencia = TRUE")
+
+    where_sql = " AND ".join(where_clauses)
+
+    if metrica == "frp_medio":
+        val_calc = "ROUND(COALESCE(AVG(q.frp), 0)::numeric, 1)::float"
+    elif metrica == "risco_medio":
+        val_calc = "ROUND(COALESCE(AVG(q.risco_fogo), 0)::numeric, 2)::float"
+    else:
+        val_calc = "COUNT(*)::int"
+
+    sql = f"""
+        WITH stats AS (
+            SELECT
+                q.co_municipio,
+                COUNT(*)::int AS total_focos,
+                COUNT(*) FILTER (WHERE q.is_referencia = TRUE)::int AS focos_referencia,
+                ROUND(COALESCE(AVG(q.frp), 0)::numeric, 1)::float AS frp_medio,
+                ROUND(COALESCE(MAX(q.frp), 0)::numeric, 1)::float AS frp_maximo,
+                ROUND(COALESCE(AVG(q.risco_fogo), 0)::numeric, 2)::float AS risco_medio,
+                COUNT(*) FILTER (WHERE q.bioma = 'Amazônia')::int AS focos_amazonia,
+                COUNT(*) FILTER (WHERE q.bioma = 'Cerrado')::int AS focos_cerrado,
+                COUNT(*) FILTER (WHERE q.bioma = 'Pantanal')::int AS focos_pantanal,
+                {val_calc} AS val
+            FROM atlas.focos_queimadas q
+            WHERE {where_sql}
+            GROUP BY q.co_municipio
+        ),
+        max_val AS (
+            SELECT NULLIF(MAX(val), 0) AS max_v FROM stats
+        )
+        SELECT
+            m.cd_municipio,
+            m.nm_municipio,
+            COALESCE(m.populacao_2022, 0)::int AS populacao_2022,
+            COALESCE(m.area_km2, 0)::float AS area_km2,
+            COALESCE(st.total_focos, 0)::int AS total_focos,
+            COALESCE(st.focos_referencia, 0)::int AS focos_referencia,
+            COALESCE(st.frp_medio, 0.0)::float AS frp_medio,
+            COALESCE(st.frp_maximo, 0.0)::float AS frp_maximo,
+            COALESCE(st.risco_medio, 0.0)::float AS risco_medio,
+            COALESCE(st.focos_amazonia, 0)::int AS focos_amazonia,
+            COALESCE(st.focos_cerrado, 0)::int AS focos_cerrado,
+            COALESCE(st.focos_pantanal, 0)::int AS focos_pantanal,
+            COALESCE(st.val, 0)::float AS val,
+            ROUND(COALESCE((st.val::numeric / NULLIF(mv.max_v, 0)), 0), 4)::float AS weight,
+            ST_AsGeoJSON(ST_SimplifyPreserveTopology(m.geom, 0.01), 6)::json AS geometry
+        FROM atlas.municipios_mt m
+        LEFT JOIN stats st ON st.co_municipio = m.cd_municipio
+        CROSS JOIN max_val mv
+        WHERE m.geom IS NOT NULL
+        ORDER BY val DESC
+    """
+
+    async with get_connection() as conn:
+        rows = await conn.fetch(sql, *params)
+
+    features = [
+        {
+            "type": "Feature",
+            "id": r["cd_municipio"],
+            "geometry": json.loads(r["geometry"]) if isinstance(r["geometry"], str) else r["geometry"],
+            "properties": {
+                "cd_municipio": r["cd_municipio"],
+                "nm_municipio": r["nm_municipio"],
+                "populacao_2022": r["populacao_2022"],
+                "area_km2": r["area_km2"],
+                "total_focos": r["total_focos"],
+                "focos_referencia": r["focos_referencia"],
+                "frp_medio": r["frp_medio"],
+                "frp_maximo": r["frp_maximo"],
+                "risco_medio": r["risco_medio"],
+                "focos_amazonia": r["focos_amazonia"],
+                "focos_cerrado": r["focos_cerrado"],
+                "focos_pantanal": r["focos_pantanal"],
+                "val": r["val"],
+                "weight": r["weight"],
+            },
+        }
+        for r in rows
+    ]
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "_metadata": {
+            "ano": ano,
+            "mes": mes,
+            "bioma": bioma or "todos",
+            "apenas_referencia": apenas_referencia,
+            "metrica": metrica,
+            "total_municipios": len(features),
+        },
+    }
+
+
+@router.get(
+    "/queimadas/filtros",
+    summary="Opções de filtros para Queimadas",
+    response_class=ORJSONResponse,
+)
+async def get_queimadas_filtros() -> dict:
+    """Retorna anos, meses, biomas e satélites disponíveis no banco."""
+    async with get_connection() as conn:
+        anos_rows = await conn.fetch("SELECT DISTINCT ano FROM atlas.focos_queimadas ORDER BY ano DESC")
+        biomas_rows = await conn.fetch("SELECT DISTINCT bioma FROM atlas.focos_queimadas WHERE bioma IS NOT NULL AND bioma != '' ORDER BY bioma")
+        sat_rows = await conn.fetch("SELECT satelite, COUNT(*) as qtd FROM atlas.focos_queimadas GROUP BY satelite ORDER BY qtd DESC")
+        total_focos = await conn.fetchval("SELECT COUNT(*) FROM atlas.focos_queimadas")
+
+    anos = [r["ano"] for r in anos_rows] if anos_rows else [2025, 2024]
+    biomas = [r["bioma"] for r in biomas_rows] if biomas_rows else ["Amazônia", "Cerrado", "Pantanal"]
+    satelites = [{"satelite": r["satelite"], "qtd": r["qtd"]} for r in sat_rows] if sat_rows else []
+
+    return {
+        "anos": anos,
+        "biomas": biomas,
+        "satelites": satelites,
+        "total_focos": total_focos or 0,
+    }
+
+
+@router.get(
+    "/queimadas/stats",
+    summary="Estatísticas Consolidadas de Queimadas",
+    response_class=ORJSONResponse,
+)
+async def get_queimadas_stats(
+    ano: Annotated[int | None, Query(description="Ano")] = None,
+    mes: Annotated[int | None, Query(ge=1, le=12, description="Mês")] = None,
+) -> dict:
+    """Retorna métricas agregadas por bioma, top municípios e série mensal."""
+    where_sql = "1=1"
+    params: list[Any] = []
+    p_idx = 1
+    if ano is not None:
+        where_sql += f" AND ano = ${p_idx}"
+        params.append(ano)
+        p_idx += 1
+    if mes is not None:
+        where_sql += f" AND mes = ${p_idx}"
+        params.append(mes)
+        p_idx += 1
+
+    sql_biomas = f"""
+        SELECT bioma, COUNT(*) as qtd, ROUND(AVG(frp)::numeric, 1)::float as frp_medio
+        FROM atlas.focos_queimadas
+        WHERE {where_sql}
+        GROUP BY bioma ORDER BY qtd DESC
+    """
+
+    sql_top_mun = f"""
+        SELECT co_municipio, municipio, COUNT(*) as qtd, ROUND(AVG(frp)::numeric, 1)::float as frp_medio
+        FROM atlas.focos_queimadas
+        WHERE {where_sql}
+        GROUP BY co_municipio, municipio ORDER BY qtd DESC LIMIT 5
+    """
+
+    async with get_connection() as conn:
+        biomas_res = await conn.fetch(sql_biomas, *params)
+        top_mun_res = await conn.fetch(sql_top_mun, *params)
+        geral = await conn.fetchrow(f"""
+            SELECT
+                COUNT(*)::int as total,
+                COUNT(*) FILTER (WHERE is_referencia = TRUE)::int as total_referencia,
+                ROUND(AVG(frp)::numeric, 1)::float as frp_medio,
+                ROUND(MAX(frp)::numeric, 1)::float as frp_maximo,
+                ROUND(AVG(risco_fogo)::numeric, 2)::float as risco_medio
+            FROM atlas.focos_queimadas
+            WHERE {where_sql}
+        """, *params)
+
+    return {
+        "geral": dict(geral) if geral else {},
+        "por_bioma": [dict(r) for r in biomas_res],
+        "top_municipios": [dict(r) for r in top_mun_res],
+    }
+
+
+@router.get(
+    "/municipio/{cd_municipio}/queimadas",
+    summary="Resumo de Queimadas do Município",
+    response_class=ORJSONResponse,
+)
+async def get_municipio_queimadas(
+    cd_municipio: Annotated[str, Path(min_length=6, max_length=7)],
+) -> dict:
+    """Retorna consolidação histórica mensal de queimadas do município."""
+    sql = """
+        SELECT
+            ano,
+            mes,
+            total_focos,
+            focos_referencia,
+            focos_amazonia,
+            focos_cerrado,
+            focos_pantanal,
+            frp_medio,
+            frp_maximo,
+            risco_fogo_medio,
+            dias_sem_chuva_medio
+        FROM atlas.queimadas_municipais_resumo
+        WHERE co_municipio = $1 OR co_municipio LIKE $1 || '%'
+        ORDER BY ano DESC, mes DESC
+    """
+    async with get_connection() as conn:
+        rows = await conn.fetch(sql, cd_municipio)
+
+    if rows:
+        tot_focos = sum(r["total_focos"] for r in rows)
+        tot_ref = sum(r["focos_referencia"] for r in rows)
+        frp_vals = [r["frp_medio"] for r in rows if r["frp_medio"] is not None]
+        risco_vals = [r["risco_fogo_medio"] for r in rows if r["risco_fogo_medio"] is not None]
+        chuva_vals = [r["dias_sem_chuva_medio"] for r in rows if r["dias_sem_chuva_medio"] is not None]
+
+        return {
+            "cd_municipio": cd_municipio,
+            "total_focos": tot_focos,
+            "focos_referencia": tot_ref,
+            "frp_medio": round(sum(frp_vals) / len(frp_vals), 1) if frp_vals else None,
+            "risco_fogo_medio": round(sum(risco_vals) / len(risco_vals), 2) if risco_vals else None,
+            "dias_sem_chuva_medio": round(sum(chuva_vals) / len(chuva_vals), 1) if chuva_vals else None,
+            "registros": [dict(r) for r in rows],
+        }
+
+    # Fallback para focos_queimadas caso o resumo ainda esteja sendo calculado
+    fallback_sql = """
+        SELECT
+            COUNT(*)::int AS total_focos,
+            COUNT(*) FILTER (WHERE is_referencia = TRUE)::int AS focos_referencia,
+            ROUND(COALESCE(AVG(frp), 0)::numeric, 1)::float AS frp_medio,
+            ROUND(COALESCE(AVG(risco_fogo), 0)::numeric, 2)::float AS risco_fogo_medio,
+            ROUND(COALESCE(AVG(numero_dias_sem_chuva), 0)::numeric, 1)::float AS dias_sem_chuva_medio
+        FROM atlas.focos_queimadas
+        WHERE co_municipio = $1 OR co_municipio LIKE $1 || '%'
+    """
+    async with get_connection() as conn:
+        fb = await conn.fetchrow(fallback_sql, cd_municipio)
+
+    return {
+        "cd_municipio": cd_municipio,
+        "total_focos": fb["total_focos"] if fb else 0,
+        "focos_referencia": fb["focos_referencia"] if fb else 0,
+        "frp_medio": fb["frp_medio"] if fb else None,
+        "risco_fogo_medio": fb["risco_fogo_medio"] if fb else None,
+        "dias_sem_chuva_medio": fb["dias_sem_chuva_medio"] if fb else None,
+        "registros": [],
+    }
+
