@@ -3,9 +3,15 @@ pipeline/connectors/inpe_connector.py
 ======================================
 Conector para os dados de Focos de Calor e Queimadas — INPE (BDQueimadas).
 
-Fonte: INPE — Instituto Nacional de Pesquisas Espaciais (Programa Queimadas)
-URL: https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/mensal/Brasil/
-Formato: CSV e ZIP mensais (focos_mensal_br_YYYYMM.csv / focos_mensal_br_YYYYMM.zip)
+Fontes:
+  1. Mensais — Brasil inteiro, todos satélites (2023–hoje):
+     https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/mensal/Brasil/
+     Formato: focos_mensal_br_YYYYMM.{csv|zip}
+
+  2. Anuais — Brasil inteiro, todos satélites (1998–2025):
+     https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/anual/Brasil_todos_sats/
+     Formato: focos_br_todos-sats_YYYY.zip
+
 Escopo: Filtro on-the-fly para Mato Grosso (estado_id == '51' ou estado == 'MATO GROSSO')
 """
 
@@ -25,14 +31,74 @@ from loguru import logger
 
 from connectors.base_connector import BaseConnector, IngestionManifest
 
+# ─── URLs base ────────────────────────────────────────────────────────────────
+
+# Mensais: Brasil inteiro, todos satélites (2023 em diante)
 _INPE_BASE_URL = "https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/mensal/Brasil/"
+
+# Anuais: Brasil inteiro, TODOS os satélites (1998–2025)
+_INPE_ANUAL_TODOS_SATS_URL = (
+    "https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/anual/Brasil_todos_sats/"
+)
+
 _MT_ESTADO_ID = "51"
 _MT_ESTADO_NOME = "MATO GROSSO"
 
 
+# ─── Funções auxiliares ───────────────────────────────────────────────────────
+
+def _is_mt_row(row: dict[str, Any]) -> bool:
+    """Verifica se um registro de foco pertence ao Mato Grosso (UF 51)."""
+    return (
+        str(row.get("estado_id", "")).strip() == _MT_ESTADO_ID
+        or str(row.get("estado", "")).strip().upper() == _MT_ESTADO_NOME
+    )
+
+
+def _stream_zip_filter_mt(
+    zip_bytes: bytes,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Extrai o primeiro CSV de um ZIP em memória e filtra apenas registros de MT."""
+    matched_rows: list[dict[str, Any]] = []
+    fieldnames: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        csv_name = next((n for n in zf.namelist() if n.endswith(".csv")), None)
+        if not csv_name:
+            raise ValueError("Nenhum arquivo CSV encontrado dentro do ZIP.")
+        with zf.open(csv_name) as csv_file:
+            reader = csv.DictReader(
+                io.TextIOWrapper(csv_file, encoding="utf-8", errors="ignore")
+            )
+            fieldnames = list(reader.fieldnames or [])
+            for row in reader:
+                if _is_mt_row(row):
+                    matched_rows.append(row)
+    return fieldnames, matched_rows
+
+
+def _write_bronze_csv(
+    local_target: Path,
+    fieldnames: list[str],
+    rows: list[dict[str, Any]],
+) -> None:
+    """Grava registros filtrados no Bronze como CSV UTF-8."""
+    if not fieldnames and rows:
+        fieldnames = list(rows[0].keys())
+    with open(local_target, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+# ─── Conector ─────────────────────────────────────────────────────────────────
+
 class INPEQueimadasConnector(BaseConnector):
     """
-    Conector para download e extração dos focos de calor mensais do INPE para Mato Grosso.
+    Conector para download e extração dos focos de calor do INPE para Mato Grosso.
+
+    Suporta duas granularidades:
+    - Anual (todos satélites): `ingest_annual_todos_sats(years=[2020, ..., 2025])`
+    - Mensal (todos satélites): `ingest(year_from=2026)` ou `ingest(months=["202601", ...])`
     """
 
     SOURCE_ID = "inpe_bdqueimadas_mensal"
@@ -70,6 +136,83 @@ class INPEQueimadasConnector(BaseConnector):
             logger.error(f"[{self.source_id}] Falha ao listar arquivos do INPE: {exc}")
             return []
 
+    # ─── Ingestão Anual (todos satélites, 1998–2025) ─────────────────────────
+
+    def ingest_annual_todos_sats(
+        self,
+        years: list[int],
+    ) -> list[tuple[Path, IngestionManifest]]:
+        """
+        Baixa os arquivos anuais (TODOS os satélites) do INPE para os anos solicitados,
+        filtra on-the-fly para Mato Grosso e salva um CSV por ano no Bronze.
+
+        Fonte: focos/csv/anual/Brasil_todos_sats/focos_br_todos-sats_YYYY.zip
+        Cobertura disponível no servidor: 1998–2025.
+        Uso recomendado: anos completos (2020–2025) antes de completar com mensais de 2026+.
+
+        Args:
+            years: Lista de anos inteiros (ex: [2020, 2021, 2022, 2023, 2024, 2025]).
+
+        Returns:
+            Lista de tuplas (Path do CSV Bronze, IngestionManifest).
+        """
+        self.bronze_path.mkdir(parents=True, exist_ok=True)
+        results: list[tuple[Path, IngestionManifest]] = []
+
+        for year in sorted(years):
+            filename = f"focos_br_todos-sats_{year}.zip"
+            url = f"{_INPE_ANUAL_TODOS_SATS_URL}{filename}"
+            # Padrão de nomenclatura Bronze: focos_queimadas_mt_YYYY.csv
+            local_target = self.bronze_path / f"focos_queimadas_mt_{year}.csv"
+
+            # Cache: reutiliza arquivo Bronze já existente
+            if local_target.exists() and local_target.stat().st_size > 100:
+                logger.info(
+                    f"[{self.source_id}] Ano {year}: já no Bronze "
+                    f"({local_target.stat().st_size / 1024:.0f} KB). Reutilizando."
+                )
+                manifest = self._create_manifest(local_target, url)
+                results.append((local_target, manifest))
+                continue
+
+            logger.info(
+                f"[{self.source_id}] Baixando ano {year} (todos satélites, Brasil) → {url}"
+            )
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0 (RootL Atlas)"}
+            )
+
+            try:
+                # Timeout generoso: ZIPs anuais podem ter 8–30 MB
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    zip_bytes = resp.read()
+
+                size_mb = len(zip_bytes) / 1024 / 1024
+                logger.info(
+                    f"[{self.source_id}] Ano {year}: {size_mb:.1f} MB baixados. "
+                    "Filtrando MT on-the-fly..."
+                )
+
+                fieldnames, matched_rows = _stream_zip_filter_mt(zip_bytes)
+                _write_bronze_csv(local_target, fieldnames, matched_rows)
+
+                logger.info(
+                    f"[{self.source_id}] Ano {year}: {len(matched_rows):,} focos de MT "
+                    f"→ {local_target.name}"
+                )
+
+                manifest = self._create_manifest(local_target, url)
+                manifest.record_count = len(matched_rows)
+                manifest.save(self.manifest_dir)
+                results.append((local_target, manifest))
+
+            except Exception as exc:
+                logger.error(f"[{self.source_id}] Erro ao processar ano {year}: {exc}")
+
+        return results
+
+    # ─── Ingestão Mensal ──────────────────────────────────────────────────────
+
     def download_and_filter_month(self, filename: str) -> tuple[Path, IngestionManifest] | None:
         """
         Baixa um arquivo mensal do Brasil (.csv ou .zip), filtra on-the-fly
@@ -94,7 +237,6 @@ class INPEQueimadasConnector(BaseConnector):
         logger.info(f"[{self.source_id}] Baixando e filtrando MT para {year_month} de {url}...")
 
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (RootL Atlas)"})
-
         matched_rows: list[dict[str, Any]] = []
         fieldnames: list[str] = []
 
@@ -102,33 +244,17 @@ class INPEQueimadasConnector(BaseConnector):
             with urllib.request.urlopen(req, timeout=120) as resp:
                 if ext == "zip":
                     zip_bytes = resp.read()
-                    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-                        csv_name = [n for n in zf.namelist() if n.endswith(".csv")][0]
-                        with zf.open(csv_name) as csv_file:
-                            reader = csv.DictReader(io.TextIOWrapper(csv_file, encoding="utf-8", errors="ignore"))
-                            fieldnames = list(reader.fieldnames or [])
-                            for row in reader:
-                                if str(row.get("estado_id", "")).strip() == _MT_ESTADO_ID or \
-                                   str(row.get("estado", "")).strip().upper() == _MT_ESTADO_NOME:
-                                    matched_rows.append(row)
+                    fieldnames, matched_rows = _stream_zip_filter_mt(zip_bytes)
                 else:
-                    # CSV stream direto
+                    # CSV stream direto (sem ler tudo em memória)
                     text_stream = io.TextIOWrapper(resp, encoding="utf-8", errors="ignore")
                     reader = csv.DictReader(text_stream)
                     fieldnames = list(reader.fieldnames or [])
                     for row in reader:
-                        if str(row.get("estado_id", "")).strip() == _MT_ESTADO_ID or \
-                           str(row.get("estado", "")).strip().upper() == _MT_ESTADO_NOME:
+                        if _is_mt_row(row):
                             matched_rows.append(row)
 
-            # Grava no Bronze local
-            if not fieldnames and matched_rows:
-                fieldnames = list(matched_rows[0].keys())
-
-            with open(local_target, "w", encoding="utf-8", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(matched_rows)
+            _write_bronze_csv(local_target, fieldnames, matched_rows)
 
             logger.info(
                 f"[{self.source_id}] Mês {year_month} processado com sucesso: "
@@ -145,30 +271,55 @@ class INPEQueimadasConnector(BaseConnector):
             logger.error(f"[{self.source_id}] Erro ao processar mês {year_month}: {exc}")
             return None
 
-    def ingest(self, months: list[str] | None = None, **kwargs: Any) -> list[tuple[Path, IngestionManifest]]:
+    def ingest(
+        self,
+        months: list[str] | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        **kwargs: Any,
+    ) -> list[tuple[Path, IngestionManifest]]:
         """
-        Executa a ingestão para os meses solicitados (formato YYYYMM) ou para os meses mais recentes.
+        Executa a ingestão mensal para os meses solicitados (formato YYYYMM) ou range de anos.
+
+        Args:
+            months: Lista de meses YYYYMM explícitos. Se None, usa year_from/year_to
+                    ou os meses mais recentes disponíveis.
+            year_from: Filtra meses a partir deste ano (inclusive).
+            year_to: Filtra meses até este ano (inclusive).
         """
         available = self.list_available_files()
         if not available:
             logger.warning(f"[{self.source_id}] Nenhum arquivo disponível no INPE.")
             return []
 
-        # Se months não foi passado, seleciona os meses de 2024 e 2025 disponíveis
         target_files: list[str] = []
+
         if months:
             for m in months:
                 matching = [f for f in available if f"_{m}." in f]
                 target_files.extend(matching)
+        elif year_from is not None or year_to is not None:
+            # Range de anos
+            for f in available:
+                m = re.search(r"_(\d{4})\d{2}\.", f)
+                if not m:
+                    continue
+                y = int(m.group(1))
+                if year_from is not None and y < year_from:
+                    continue
+                if year_to is not None and y > year_to:
+                    continue
+                target_files.append(f)
         else:
-            # Padrão: meses de 2024 e 2025
-            target_files = [f for f in available if any(f"_{y}" in f for y in ["2024", "2025"])]
-            # Se não houver, pega os últimos 6 arquivos disponíveis
+            # Padrão: ano atual e anterior
+            current_year = datetime.now(tz=timezone.utc).year
+            target_years = [str(current_year - 1), str(current_year)]
+            target_files = [f for f in available if any(f"_{y}" in f for y in target_years)]
             if not target_files:
                 target_files = available[-6:]
 
         results: list[tuple[Path, IngestionManifest]] = []
-        for fn in target_files:
+        for fn in sorted(target_files):
             res = self.download_and_filter_month(fn)
             if res:
                 results.append(res)

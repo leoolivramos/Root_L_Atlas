@@ -27,10 +27,12 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from loguru import logger
+from shapely.geometry import Point
 
 from transforms.geo_utils import (
     EPSG_SIRGAS2000,
     MT_BBOX,
+    CEPToCoordsGeocoder,
     add_area_km2,
     add_centroid_column,
     reproject_to_wgs84,
@@ -38,6 +40,14 @@ from transforms.geo_utils import (
     validate_coordinates_in_bbox,
     write_geoparquet_with_bbox,
 )
+
+try:
+    from connectors.seduc_connector import SEDUCEscolasConnector
+except ImportError:
+    try:
+        from pipeline.connectors.seduc_connector import SEDUCEscolasConnector
+    except ImportError:
+        SEDUCEscolasConnector = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,15 +185,19 @@ def inep_escolas_to_silver(
     silver_path: Path,
     lat_col: str = "nu_latitude",
     lon_col: str = "nu_longitude",
+    seduc_xlsx_path: Path | None = None,
 ) -> Path:
     """
     Transforma CSV de escolas do INEP para Silver GeoParquet.
+    Cruza com dados da SEDUC-MT (2021) e utiliza o pacote cep-to-coords
+    quando houver CEP válido para posicionar com precisão as escolas.
 
     Args:
         csv_path: Path do CSV pré-filtrado por MT (já em UTF-8)
         silver_path: Diretório de saída Silver
         lat_col: Coluna de latitude (após normalização)
         lon_col: Coluna de longitude (após normalização)
+        seduc_xlsx_path: Path opcional da planilha de escolas da SEDUC-MT 2021
 
     Returns:
         Path do GeoParquet Silver
@@ -195,6 +209,38 @@ def inep_escolas_to_silver(
 
     # Normaliza colunas
     df = normalize_all_columns(df)
+
+    # Identifica coluna de código da escola
+    if "co_entidade" in df.columns:
+        df["co_entidade"] = pd.to_numeric(df["co_entidade"], errors="coerce").fillna(0).astype(int)
+
+    # Identifica coluna de CEP
+    cep_col = next((c for c in df.columns if c in ("co_cep", "nu_cep", "cep")), None)
+    if cep_col:
+        df["co_cep"] = df[cep_col].apply(CEPToCoordsGeocoder.clean_cep)
+
+    # Cruzamento com SEDUC-MT 2021 para enriquecimento e refinamento cadastral
+    if SEDUCEscolasConnector:
+        candidate_seduc_paths = [
+            seduc_xlsx_path,
+            silver_path.parent / "seduc_escolas" / "cadastro_escolas_2021.xlsx",
+            silver_path.parent.parent / "bronze" / "seduc_escolas" / "cadastro_escolas_2021.xlsx",
+            Path("/data/bronze/seduc_escolas/cadastro_escolas_2021.xlsx"),
+            Path(__file__).resolve().parent.parent / "data" / "seduc" / "cadastro_escolas_2021.xlsx",
+        ]
+        chosen_seduc = next((p for p in candidate_seduc_paths if p and p.exists()), None)
+        if chosen_seduc:
+            try:
+                df_seduc = SEDUCEscolasConnector.load_seduc_df(chosen_seduc)
+                seduc_cols_to_merge = [
+                    "co_entidade", "seduc_cep", "seduc_logradouro",
+                    "seduc_numero", "seduc_bairro", "seduc_municipio", "seduc_nome_escola"
+                ]
+                df = pd.merge(df, df_seduc[seduc_cols_to_merge], on="co_entidade", how="left")
+                matched_seduc = df["seduc_cep"].notna().sum()
+                logger.info(f"  Enriquecido com SEDUC-MT: {matched_seduc:,}/{len(df):,} escolas cruzadas com sucesso")
+            except Exception as e:
+                logger.warning(f"  Não foi possível cruzar com SEDUC-MT: {e}")
 
     # Re-detecta lat/lon após normalização
     lat_col = normalize_column_name(lat_col)
@@ -208,15 +254,12 @@ def inep_escolas_to_silver(
     )
 
     if has_coords:
-        # Corrige separador decimal ANTES de qualquer filtro numérico
-        # (INEP usa vírgula em algumas edições, pandas lê como object/string)
         for col in [lat_col, lon_col]:
             if df[col].dtype == object:
                 df[col] = pd.to_numeric(df[col].str.replace(",", "."), errors="coerce")
             else:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Remove registros sem coordenadas válidas (após conversão numérica)
         before = len(df)
         df = df.dropna(subset=[lat_col, lon_col])
         df = df[(df[lat_col] != 0.0) & (df[lon_col] != 0.0)]
@@ -224,52 +267,89 @@ def inep_escolas_to_silver(
         if removed > 0:
             logger.warning(f"  {removed} escolas sem coordenadas removidas")
 
-        # Cria GeoDataFrame
         gdf = gpd.GeoDataFrame(
             df,
             geometry=gpd.points_from_xy(df[lon_col], df[lat_col]),
             crs="EPSG:4326",
         )
     else:
-        # Georreferenciamento espacial a partir da malha de setores censitários de MT
         logger.info(
-            f"  Colunas de coordenadas {lat_col}/{lon_col} não encontradas no INEP. "
-            "Realizando georreferenciamento espacial via malha de setores censitários do IBGE..."
+            "  Coordenadas explícitas não encontradas. Georreferenciando via cep-to-coords (CEP/SEDUC) "
+            "com fallback nos setores censitários do IBGE..."
         )
+        # Inicializa geocodificador cep-to-coords com cache persistente
+        cache_file = silver_path.parent / "geocoding" / "cep_coords_cache.json"
+        geocoder = CEPToCoordsGeocoder(cache_path=cache_file)
+
+        # Reúne todos os CEPs candidatos (INEP + SEDUC)
+        candidate_ceps = []
+        if "co_cep" in df.columns:
+            candidate_ceps.extend(df["co_cep"].dropna().tolist())
+        if "seduc_cep" in df.columns:
+            candidate_ceps.extend(df["seduc_cep"].dropna().tolist())
+
+        geocoded_ceps = geocoder.batch_geocode(candidate_ceps)
+
+        # Carrega malha de setores censitários de MT para fallback
         setores_path = silver_path.parent / "setores_censitarios" / "setores_censitarios_mt.parquet"
         if not setores_path.exists():
-            raise FileNotFoundError(
-                f"Malha de setores para georreferenciamento de escolas não encontrada: {setores_path}"
-            )
+            setores_path = Path("/data/silver/setores_censitarios/setores_censitarios_mt.parquet")
 
-        setores_gdf = gpd.read_parquet(setores_path)
-        mun_col = "cd_mun" if "cd_mun" in setores_gdf.columns else "cd_municipio"
-        setores_by_mun = (
-            setores_gdf.groupby(mun_col)["geometry"]
-            .apply(lambda s: [g.centroid for g in s])
-            .to_dict()
-        )
+        setores_by_mun = {}
+        if setores_path.exists():
+            setores_gdf = gpd.read_parquet(setores_path)
+            mun_col = "cd_mun" if "cd_mun" in setores_gdf.columns else "cd_municipio"
+            setores_by_mun = (
+                setores_gdf.groupby(mun_col)["geometry"]
+                .apply(lambda s: [g.centroid for g in s])
+                .to_dict()
+            )
 
         pts = []
         lats = []
         lons = []
+        count_osm = 0
+        count_fallback = 0
+        default_pt = Point(-55.42, -12.64)
+
         for _, row in df.iterrows():
             co_mun = str(row.get("co_municipio", "")).strip()
             ent_id = int(row.get("co_entidade", 0)) if pd.notna(row.get("co_entidade")) else 0
-            cand = setores_by_mun.get(co_mun)
-            if cand:
-                pt = cand[ent_id % len(cand)]
+            cep_inep = row.get("co_cep")
+            cep_seduc = row.get("seduc_cep")
+
+            res = None
+            if cep_inep and cep_inep in geocoded_ceps:
+                res = geocoded_ceps[cep_inep]
+            elif cep_seduc and cep_seduc in geocoded_ceps:
+                res = geocoded_ceps[cep_seduc]
+
+            if res and res.get("found"):
+                lat_val = float(res["lat"])
+                lon_val = float(res["lon"])
+                pt = Point(lon_val, lat_val)
+                count_osm += 1
             else:
-                from shapely.geometry import Point
-                pt = Point(-55.42, -12.64)  # Centro de MT
+                cand = setores_by_mun.get(co_mun)
+                if cand:
+                    pt = cand[ent_id % len(cand)]
+                else:
+                    pt = default_pt
+                lat_val = pt.y
+                lon_val = pt.x
+                count_fallback += 1
+
             pts.append(pt)
-            lats.append(pt.y)
-            lons.append(pt.x)
+            lats.append(lat_val)
+            lons.append(lon_val)
 
         df[lat_col] = lats
         df[lon_col] = lons
         gdf = gpd.GeoDataFrame(df, geometry=pts, crs="EPSG:4326")
-        logger.success(f"  Georreferenciamento concluído: {len(gdf):,} escolas posicionadas em MT")
+        logger.success(
+            f"  Georreferenciamento concluído: {count_osm:,} escolas posicionadas via cep-to-coords "
+            f"| {count_fallback:,} via malha censitária IBGE"
+        )
 
     # Deduplicação por co_entidade
     pk = "co_entidade"
@@ -284,7 +364,7 @@ def inep_escolas_to_silver(
 
     # Metadados
     gdf["fonte_id"] = "inep_censo_escolar_2025"
-    gdf["versao_processamento"] = "silver_v1"
+    gdf["versao_processamento"] = "silver_v2_osm"
 
     # Persistência
     silver_path.mkdir(parents=True, exist_ok=True)
@@ -309,8 +389,9 @@ def datasus_cnes_to_silver(
 ) -> Path:
     """
     Transforma Parquet do CNES (saída do pysus) para Silver GeoParquet.
-    Se não houver coordenadas explícitas, realiza o georreferenciamento
-    distribuído pelos centróides dos setores censitários do município.
+    Quando houver CEP válido, geocodifica via pacote cep-to-coords.
+    Para os demais, realiza o georreferenciamento distribuído pelos centróides
+    dos setores censitários do município.
     """
     logger.info(f"[CNES→Silver] Lendo {parquet_path.name}...")
 
@@ -326,9 +407,12 @@ def datasus_cnes_to_silver(
     # Identifica código do município
     mun_col = "codufmun" if "codufmun" in df.columns else ("co_municipio" if "co_municipio" in df.columns else None)
 
+    # Identifica coluna de CEP
+    cep_col = next((c for c in df.columns if c in ("cod_cep", "co_cep", "nu_cep", "cep")), None)
+    if cep_col:
+        df["co_cep"] = df[cep_col].apply(CEPToCoordsGeocoder.clean_cep)
+
     # Detecta colunas de coordenada se existirem
-    # Validação mais estrita: a coluna deve ter valores numéricos plausíveis para o Brasil
-    # Latitude BR: [-34, 6] | Longitude BR: [-74, -28]
     lat_candidates = []
     for c in df.columns:
         if "lat" in c.lower():
@@ -358,47 +442,64 @@ def datasus_cnes_to_silver(
             crs="EPSG:4326",
         )
     else:
-        logger.info("  Coordenadas não inclusas no extrato bruto ST. Georreferenciando via malha censitária MT...")
+        logger.info(
+            "  Coordenadas explícitas ausentes. Georreferenciando via cep-to-coords (CEP) "
+            "com fallback na malha censitária do IBGE..."
+        )
+        cache_file = silver_path.parent / "geocoding" / "cep_coords_cache.json"
+        geocoder = CEPToCoordsGeocoder(cache_path=cache_file)
+
+        ceps_to_query = df["co_cep"].dropna().tolist() if "co_cep" in df.columns else []
+        geocoded_ceps = geocoder.batch_geocode(ceps_to_query)
+
         if setores_path is None or not setores_path.exists():
             setores_path = silver_path.parent / "setores_censitarios" / "setores_censitarios_mt.parquet"
-
         if not setores_path.exists():
-            raise FileNotFoundError(f"Malha censitária para georreferenciamento CNES não encontrada: {setores_path}")
+            setores_path = Path("/data/silver/setores_censitarios/setores_censitarios_mt.parquet")
 
-        setores_gdf = gpd.read_parquet(setores_path)
-        mun_c = "cd_mun" if "cd_mun" in setores_gdf.columns else "cd_municipio"
-
-        mun_map_6to7 = {}
         centroids_by_mun7 = {}
-        for cd_mun7, group in setores_gdf.groupby(mun_c):
-            cd_mun7_str = str(cd_mun7).strip()
-            mun_map_6to7[cd_mun7_str[:6]] = cd_mun7_str
-            centroids_by_mun7[cd_mun7_str] = [g.centroid for g in group.geometry]
+        mun_map_6to7 = {}
+        if setores_path.exists():
+            setores_gdf = gpd.read_parquet(setores_path)
+            mun_c = "cd_mun" if "cd_mun" in setores_gdf.columns else "cd_municipio"
+            for cd_mun7, group in setores_gdf.groupby(mun_c):
+                cd_mun7_str = str(cd_mun7).strip()
+                mun_map_6to7[cd_mun7_str[:6]] = cd_mun7_str
+                centroids_by_mun7[cd_mun7_str] = [g.centroid for g in group.geometry]
 
         pts = []
         mun_7_list = []
-        from shapely.geometry import Point
         default_pt = Point(-55.42, -12.64)
+        count_osm = 0
+        count_fallback = 0
 
-        # IMPORTANTE: usa enumeração sequencial (seq) em vez do índice do DataFrame (i).
-        # Após filtros/deduplicações, o índice pode ser não-contíguo, causando
-        # `i % len(cands)` acessar sempre os mesmos poucos centróides ao invés
-        # de distribuir os estabelecimentos uniformemente pelo município.
         for seq, (_, row) in enumerate(df.iterrows()):
             m_raw = str(row.get(mun_col, "")).strip() if mun_col else ""
             m7 = mun_map_6to7.get(m_raw[:6], m_raw if len(m_raw) == 7 else None)
             cands = centroids_by_mun7.get(m7, [default_pt])
-            pt = cands[seq % len(cands)]
+            cep_val = row.get("co_cep")
+
+            res = geocoded_ceps.get(cep_val) if cep_val else None
+            if res and res.get("found"):
+                pt = Point(float(res["lon"]), float(res["lat"]))
+                count_osm += 1
+            else:
+                pt = cands[seq % len(cands)]
+                count_fallback += 1
+
             pts.append(pt)
             mun_7_list.append(m7 or m_raw)
 
         df["co_municipio"] = mun_7_list
         gdf = gpd.GeoDataFrame(df, geometry=pts, crs="EPSG:4326")
-        logger.success(f"  Georreferenciamento concluído: {len(gdf):,} estabelecimentos posicionados")
+        logger.success(
+            f"  Georreferenciamento concluído: {count_osm:,} estabelecimentos posicionados via cep-to-coords "
+            f"| {count_fallback:,} via malha censitária IBGE"
+        )
 
     gdf, _ = validate_coordinates_in_bbox(gdf, bbox=MT_BBOX)
     gdf["fonte_id"] = "datasus_cnes_estab"
-    gdf["versao_processamento"] = "silver_v1"
+    gdf["versao_processamento"] = "silver_v2_cep_to_coords"
 
     # Deduplicação por co_cnes
     gdf = gdf.drop_duplicates(subset=["co_cnes"], keep="first")

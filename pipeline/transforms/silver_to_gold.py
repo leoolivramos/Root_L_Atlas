@@ -214,6 +214,8 @@ ESCOLAS_COLUMN_MAP = {
     "qt_salas_utilizadas": "qt_salas_utilizadas",
     "qt_equip_computador": "qt_equip_computador",
     "qt_mat_bas": "qt_mat_bas",
+    "co_cep": "co_cep",
+    "seduc_cep": "seduc_cep",
     "geometry": "geometry",
     "fonte_id": "fonte_id",
     "versao_processamento": "versao_processamento",
@@ -251,8 +253,11 @@ def escolas_to_gold(
     gdf = gpd.read_parquet(silver_path)
 
     # Mapeamento canônico
+    if "co_cep" in gdf.columns and "seduc_cep" in gdf.columns:
+        gdf["co_cep"] = gdf["co_cep"].fillna(gdf["seduc_cep"])
     rename_map = {k: v for k, v in ESCOLAS_COLUMN_MAP.items() if k in gdf.columns}
     gdf = gdf.rename(columns=rename_map)
+    gdf = gdf.loc[:, ~gdf.columns.duplicated(keep="first")]
 
     # Decodifica tp_dependencia
     if "tp_dependencia" in gdf.columns:
@@ -501,6 +506,9 @@ def cnes_to_gold(
     if "no_razao_social" not in gdf.columns:
         gdf["no_razao_social"] = gdf.get("norazao", gdf["no_fantasia"])
 
+    if "co_cep" not in gdf.columns and "cod_cep" in gdf.columns:
+        gdf["co_cep"] = gdf["cod_cep"]
+
     # Leitos
     leito_col = "leithosp" if "leithosp" in gdf.columns else "qt_leitos_total"
     if leito_col in gdf.columns:
@@ -524,6 +532,7 @@ def cnes_to_gold(
         cd_setor_map = joined.set_index("co_cnes")["cd_setor"].to_dict()
         gdf["cd_setor_ref"] = gdf["co_cnes"].map(cd_setor_map)
 
+    gdf = gdf.loc[:, ~gdf.columns.duplicated(keep="first")]
     gold_path.mkdir(parents=True, exist_ok=True)
     output = gold_path / "estabelecimentos_saude.parquet"
     write_geoparquet_with_bbox(gdf, output)
