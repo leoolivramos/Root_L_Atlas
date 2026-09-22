@@ -17,7 +17,6 @@ ESTRATÉGIA:
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -120,11 +119,11 @@ class OSMConnector(BaseConnector):
         filtered_pbf = silver_path / "mt_highways.osm.pbf"
         if not filtered_pbf.exists():
             logger.info("[OSM] Filtrando vias relevantes...")
-            highway_tags = " ".join(f"w/highway={h}" for h in _HIGHWAY_FILTER)
+            highway_tags = [f"w/highway={highway}" for highway in sorted(_HIGHWAY_FILTER)]
             cmd_filter = [
                 "osmium", "tags-filter",
                 str(mt_pbf),
-                "w/highway",
+                *highway_tags,
                 "--output", str(filtered_pbf),
                 "--overwrite",
             ]
