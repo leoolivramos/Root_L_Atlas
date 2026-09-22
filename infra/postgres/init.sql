@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS atlas.escolas (
     co_municipio            VARCHAR(7)  NOT NULL,
     no_municipio            TEXT        NOT NULL,
     no_bairro               TEXT,
+    co_cep                  VARCHAR(8),
     -- Etapas de ensino ofertadas (flags booleanas)
     in_inf_creche           BOOLEAN     DEFAULT FALSE,
     in_inf_pre_escola       BOOLEAN     DEFAULT FALSE,
@@ -162,6 +163,7 @@ CREATE TABLE IF NOT EXISTS atlas.estabelecimentos_saude (
     no_municipio            TEXT,
     no_logradouro           TEXT,
     no_bairro               TEXT,
+    co_cep                  VARCHAR(8),
     -- Geometria
     geom                    GEOMETRY(POINT, 4326),
     cd_setor_ref            VARCHAR(15),
