@@ -17,6 +17,7 @@ Linhagem de dados registrada nativamente pelo Prefect e MinIO.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -128,6 +129,25 @@ def task_ingest_osm() -> Path:
     return local_path
 
 
+@task(name="ingest-inpe-queimadas", retries=3, retry_delay_seconds=60)
+def task_ingest_inpe_queimadas(months: list[str] | None = None) -> list[Path]:
+    """Baixa focos mensais do INPE já filtrados para Mato Grosso."""
+    from connectors.inpe_connector import INPEQueimadasConnector
+
+    connector = INPEQueimadasConnector(
+        bronze_base_path=str(BRONZE),
+        minio_endpoint=os.getenv("MINIO_ENDPOINT"),
+        minio_access_key=os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER"),
+        minio_secret_key=os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD"),
+    )
+    results = connector.ingest(months=months)
+    paths = [path for path, _ in results]
+    if not paths:
+        raise RuntimeError("Nenhum arquivo mensal de queimadas do INPE foi ingerido.")
+    logger.info(f"INPE Queimadas Bronze: {len(paths)} arquivo(s)")
+    return paths
+
+
 @task(name="ingest-sinesp-seguranca", retries=3, retry_delay_seconds=60)
 def task_ingest_sinesp(municipios_parquet: Path | None = None) -> Path:
     """Ingestão de estatísticas municipais de segurança pública — SINESP."""
@@ -222,7 +242,14 @@ def task_osm_to_silver(pbf_path: Path) -> Path:
         silver_path=SILVER / "osm",
     )
     geojson_path = SILVER / "osm" / "highways_mt.geojson"
-    if not geojson_path.exists():
+    needs_conversion = not geojson_path.exists()
+    if not needs_conversion:
+        try:
+            with geojson_path.open(encoding="utf-8") as geojson_file:
+                needs_conversion = not bool(json.load(geojson_file).get("features"))
+        except (OSError, ValueError, AttributeError):
+            needs_conversion = True
+    if needs_conversion:
         connector.convert_to_geojson(filtered_pbf, geojson_path)
 
     return osm_highways_to_silver(
@@ -326,6 +353,24 @@ def task_mapbiomas_to_gold(silver_parquet: Path) -> Path:
     return mapbiomas_to_gold(
         silver_path=silver_parquet,
         gold_path=GOLD / "meio_ambiente",
+    )
+
+
+@task(name="inpe-queimadas-bronze-to-silver")
+def task_inpe_queimadas_to_silver(csv_paths: list[Path]) -> Path:
+    """Consolida os arquivos mensais de queimadas em Silver."""
+    from transforms.bronze_to_silver import inpe_queimadas_to_silver
+    return inpe_queimadas_to_silver(csv_paths, SILVER / "meio_ambiente")
+
+
+@task(name="inpe-queimadas-silver-to-gold")
+def task_inpe_queimadas_to_gold(silver_parquet: Path, municipios_gold: Path) -> tuple[Path, Path]:
+    """Gera focos pontuais e resumo municipal Gold."""
+    from transforms.silver_to_gold import inpe_queimadas_to_gold
+    return inpe_queimadas_to_gold(
+        silver_path=silver_parquet,
+        gold_path=GOLD / "meio_ambiente",
+        municipios_parquet=municipios_gold,
     )
 
 
@@ -434,6 +479,28 @@ def task_load_mapbiomas(gold_parquet: Path) -> int:
     )
 
 
+@task(name="load-inpe-queimadas-postgis")
+def task_load_inpe_queimadas(focos_parquet: Path, resumo_parquet: Path) -> tuple[int, int]:
+    """Carrega focos e resumo municipal de queimadas no PostGIS."""
+    from loaders.postgis_loader import load_geoparquet_to_postgis
+    focos = load_geoparquet_to_postgis(
+        parquet_path=focos_parquet,
+        table_name="focos_queimadas",
+        pk_column="id",
+        database_url=DATABASE_URL,
+        if_exists="upsert",
+        chunksize=25_000,
+    )
+    resumo = load_geoparquet_to_postgis(
+        parquet_path=resumo_parquet,
+        table_name="queimadas_municipais_resumo",
+        pk_column="co_municipio",
+        database_url=DATABASE_URL,
+        if_exists="replace",
+    )
+    return focos, resumo
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Fluxo Principal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -468,12 +535,16 @@ def main_pipeline(
         inep_zip = task_ingest_inep(year=ano_censo)
         cnes_parquet = task_ingest_cnes()
         osm_pbf = task_ingest_osm()
+        inpe_queimadas_csvs = task_ingest_inpe_queimadas(
+            months=[m.strip() for m in os.getenv("INPE_QUEIMADAS_MESES", "202507,202508,202509").split(",") if m.strip()]
+        )
     else:
         ibge_zip = next(BRONZE.glob("**/*setores*.*"), None)
         inep_zip = next(BRONZE.glob("**/microdados_*.zip"), None)
         cnes_parquet = next(BRONZE.glob("**/cnes_mt_*.parquet"), None)
         osm_pbf = next(BRONZE.glob("**/*.osm.pbf"), None)
-        if not ibge_zip or not inep_zip:
+        inpe_queimadas_csvs = sorted((BRONZE / "inpe_bdqueimadas_mensal").glob("focos_queimadas_mt_*.csv"))
+        if not ibge_zip or not inep_zip or not inpe_queimadas_csvs:
             raise FileNotFoundError("skip_ingest=True mas arquivos Bronze essenciais não encontrados.")
 
     # ── 2. Silver & Gold: Território (Setores & Municípios) ────
@@ -505,6 +576,11 @@ def main_pipeline(
     # ── 7. Silver & Gold: Meio Ambiente (MapBiomas) ────────────
     mapbiomas_silver = task_mapbiomas_to_silver(mapbiomas_pq)
     mapbiomas_gold = task_mapbiomas_to_gold(mapbiomas_silver)
+    queimadas_silver = task_inpe_queimadas_to_silver(inpe_queimadas_csvs)
+    queimadas_gold, queimadas_resumo_gold = task_inpe_queimadas_to_gold(
+        queimadas_silver,
+        municipios_gold,
+    )
 
     # ── 8. Cargas PostGIS ──────────────────────────────────────
     n_setores = task_load_setores(setores_gold)
@@ -514,6 +590,10 @@ def main_pipeline(
     n_osm = task_load_osm(osm_gold)
     n_sinesp = task_load_sinesp(sinesp_gold)
     n_mapbiomas = task_load_mapbiomas(mapbiomas_gold)
+    n_queimadas, n_queimadas_resumo = task_load_inpe_queimadas(
+        queimadas_gold,
+        queimadas_resumo_gold,
+    )
 
     end = datetime.now(timezone.utc)
     duration = (end - start).total_seconds()
@@ -528,6 +608,8 @@ def main_pipeline(
         "malha_viaria_osm": n_osm,
         "ocorrencias_seguranca": n_sinesp,
         "cobertura_solo_mapbiomas": n_mapbiomas,
+        "focos_queimadas": n_queimadas,
+        "queimadas_municipais_resumo": n_queimadas_resumo,
     }
 
     logger.success(
