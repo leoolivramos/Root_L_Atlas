@@ -208,21 +208,21 @@ def inep_escolas_to_silver(
     )
 
     if has_coords:
-        # Remove registros sem coordenadas válidas
+        # Corrige separador decimal ANTES de qualquer filtro numérico
+        # (INEP usa vírgula em algumas edições, pandas lê como object/string)
+        for col in [lat_col, lon_col]:
+            if df[col].dtype == object:
+                df[col] = pd.to_numeric(df[col].str.replace(",", "."), errors="coerce")
+            else:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Remove registros sem coordenadas válidas (após conversão numérica)
         before = len(df)
         df = df.dropna(subset=[lat_col, lon_col])
-        df = df[df[lat_col] != 0]
-        df = df[df[lon_col] != 0]
+        df = df[(df[lat_col] != 0.0) & (df[lon_col] != 0.0)]
         removed = before - len(df)
         if removed > 0:
             logger.warning(f"  {removed} escolas sem coordenadas removidas")
-
-        # Corrige separador decimal (INEP usa vírgula em algumas edições)
-        for col in [lat_col, lon_col]:
-            if df[col].dtype == object:
-                df[col] = df[col].str.replace(",", ".").astype(float)
-            else:
-                df[col] = df[col].astype(float)
 
         # Cria GeoDataFrame
         gdf = gpd.GeoDataFrame(
@@ -327,14 +327,23 @@ def datasus_cnes_to_silver(
     mun_col = "codufmun" if "codufmun" in df.columns else ("co_municipio" if "co_municipio" in df.columns else None)
 
     # Detecta colunas de coordenada se existirem
-    lat_candidates = [c for c in df.columns if "lat" in c.lower()]
-    lon_candidates = [c for c in df.columns if "lon" in c.lower() or "lng" in c.lower()]
+    # Validação mais estrita: a coluna deve ter valores numéricos plausíveis para o Brasil
+    # Latitude BR: [-34, 6] | Longitude BR: [-74, -28]
+    lat_candidates = []
+    for c in df.columns:
+        if "lat" in c.lower():
+            series = pd.to_numeric(df[c].astype(str).str.replace(",", "."), errors="coerce")
+            if series.notna().any() and series.dropna().between(-34.0, 6.0).any():
+                lat_candidates.append(c)
 
-    has_coords = (
-        bool(lat_candidates and lon_candidates)
-        and df[lat_candidates[0]].notna().any()
-        and df[lon_candidates[0]].notna().any()
-    )
+    lon_candidates = []
+    for c in df.columns:
+        if "lon" in c.lower() or "lng" in c.lower():
+            series = pd.to_numeric(df[c].astype(str).str.replace(",", "."), errors="coerce")
+            if series.notna().any() and series.dropna().between(-74.0, -28.0).any():
+                lon_candidates.append(c)
+
+    has_coords = bool(lat_candidates and lon_candidates)
 
     if has_coords:
         lat_col = lat_candidates[0]
@@ -342,7 +351,7 @@ def datasus_cnes_to_silver(
         df[lat_col] = pd.to_numeric(df[lat_col].astype(str).str.replace(",", "."), errors="coerce")
         df[lon_col] = pd.to_numeric(df[lon_col].astype(str).str.replace(",", "."), errors="coerce")
         df = df.dropna(subset=[lat_col, lon_col])
-        df = df[(df[lat_col] != 0) & (df[lon_col] != 0)]
+        df = df[(df[lat_col] != 0.0) & (df[lon_col] != 0.0)]
         gdf = gpd.GeoDataFrame(
             df,
             geometry=gpd.points_from_xy(df[lon_col], df[lat_col]),
@@ -371,11 +380,15 @@ def datasus_cnes_to_silver(
         from shapely.geometry import Point
         default_pt = Point(-55.42, -12.64)
 
-        for i, row in df.iterrows():
+        # IMPORTANTE: usa enumeração sequencial (seq) em vez do índice do DataFrame (i).
+        # Após filtros/deduplicações, o índice pode ser não-contíguo, causando
+        # `i % len(cands)` acessar sempre os mesmos poucos centróides ao invés
+        # de distribuir os estabelecimentos uniformemente pelo município.
+        for seq, (_, row) in enumerate(df.iterrows()):
             m_raw = str(row.get(mun_col, "")).strip() if mun_col else ""
             m7 = mun_map_6to7.get(m_raw[:6], m_raw if len(m_raw) == 7 else None)
             cands = centroids_by_mun7.get(m7, [default_pt])
-            pt = cands[i % len(cands)]
+            pt = cands[seq % len(cands)]
             pts.append(pt)
             mun_7_list.append(m7 or m_raw)
 
