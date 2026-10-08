@@ -91,7 +91,7 @@
 
         <div class="filter-info-card filter-info-card--small">
           <p class="filter-info-card__desc">
-            Coloração dos setores pela distância euclidiana à escola mais próxima.
+            Coloração dos setores pela distância em linha reta à escola mais próxima.
             Ajuste o limiar para visualizar diferentes níveis de acesso.
           </p>
         </div>
