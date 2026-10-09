@@ -184,7 +184,9 @@ async def get_municipio(
             m.nm_municipio,
             m.area_km2,
             m.populacao_2022,
+            ROUND((m.populacao_2022 / NULLIF(m.area_km2, 0))::numeric, 2)::float8 AS densidade_demografica,
             (SELECT COUNT(*) FROM atlas.setores_censitarios s WHERE s.cd_municipio = m.cd_municipio)::int AS qt_setores,
+            (SELECT COALESCE(SUM(s.domicilios_total), 0) FROM atlas.setores_censitarios s WHERE s.cd_municipio = m.cd_municipio)::int AS qt_domicilios,
             (SELECT COUNT(*) FROM atlas.escolas e WHERE e.co_municipio = m.cd_municipio)::int AS qt_escolas_total,
             (SELECT COUNT(*) FROM atlas.escolas e WHERE e.co_municipio = m.cd_municipio AND e.tp_dependencia IN (1,2,3))::int AS qt_escolas_publicas,
             (SELECT COUNT(*) FROM atlas.estabelecimentos_saude es WHERE es.co_municipio = m.cd_municipio)::int AS qt_estabelecimentos_saude,
@@ -192,6 +194,8 @@ async def get_municipio(
             {geom_sql} AS geometry,
             m.fonte_id,
             m.data_extracao,
+            m.url_origem,
+            m.versao_processamento,
             m.criado_em
         FROM atlas.municipios_mt m
         WHERE m.cd_municipio = $1
@@ -210,6 +214,12 @@ async def get_municipio(
         "id": cd_municipio,
         "geometry": geom,
         "properties": data,
+        "_lineage": {
+            "fonte_id": data.get("fonte_id") or "ibge_censo_2022_populacao",
+            "data_extracao": str(data.get("data_extracao", "")),
+            "url_origem": data.get("url_origem") or "https://apisidra.ibge.gov.br/values/t/4709/n6/in%20n3%2051/v/93/p/2022",
+            "versao_processamento": data.get("versao_processamento") or "1.0.0",
+        },
     }
 
 
@@ -274,7 +284,7 @@ async def get_saude(
 async def get_municipio_seguranca(
     cd_municipio: Annotated[str, Path(min_length=6, max_length=7)],
 ) -> dict:
-    """Retorna consolidação de ocorrências criminais (SINESP) para o município."""
+    """Retorna consolidação de ocorrências criminais (SINESP) para o município com taxa proporcional à população."""
     sql = """
         SELECT
             tipo_crime,
@@ -287,17 +297,32 @@ async def get_municipio_seguranca(
         GROUP BY tipo_crime
         ORDER BY total_ocorrencias DESC
     """
+    sql_mun = """
+        SELECT nm_municipio, COALESCE(populacao_2022, 0)::int AS populacao_2022
+        FROM atlas.municipios_mt
+        WHERE cd_municipio = $1
+    """
     async with get_connection() as conn:
         rows = await conn.fetch(sql, cd_municipio)
+        mun_row = await conn.fetchrow(sql_mun, cd_municipio)
 
     total_ocorrencias = sum(r["total_ocorrencias"] for r in rows) if rows else 0
     total_vitimas = sum(r["total_vitimas"] for r in rows) if rows else 0
+    populacao = mun_row["populacao_2022"] if mun_row else 0
+    nm_municipio = mun_row["nm_municipio"] if mun_row else ""
+
+    taxa_100k_ocorrencias = round((total_ocorrencias / populacao * 100000), 1) if populacao > 0 else 0.0
+    taxa_100k_vitimas = round((total_vitimas / populacao * 100000), 1) if populacao > 0 else 0.0
 
     return {
         "cd_municipio": cd_municipio,
+        "nm_municipio": nm_municipio,
+        "populacao_2022": populacao,
         "fonte": "SINESP / MJSP",
         "total_ocorrencias": total_ocorrencias,
         "total_vitimas": total_vitimas,
+        "taxa_100k_ocorrencias": taxa_100k_ocorrencias,
+        "taxa_100k_vitimas": taxa_100k_vitimas,
         "crimes": [dict(r) for r in rows],
     }
 
@@ -327,18 +352,18 @@ async def get_seguranca_filtros() -> dict:
 
 @router.get(
     "/seguranca/heatmap",
-    summary="GeoJSON de Pontos para Mapa de Calor de Segurança",
+    summary="GeoJSON de Polígonos Municipais para Choropleth de Segurança Pública",
     response_class=ORJSONResponse,
 )
 async def get_seguranca_heatmap(
     ano: int | None = Query(None, description="Ano de referência (ex: 2024, 2023)"),
     tipo_crime: str | None = Query(None, description="Tipo de crime específico ou 'todos'"),
     mes: int | None = Query(None, ge=1, le=12, description="Mês específico"),
-    metrica: str = Query("ocorrencias", description="Métrica: ocorrencias ou vitimas"),
+    metrica: str = Query("taxa_100k", description="Métrica: taxa_100k (proporcional à população), taxa_vitimas, ocorrencias ou vitimas"),
 ) -> dict:
     """
-    Retorna FeatureCollection GeoJSON com centroides municipais ponderados
-    para renderização direta em camadas Heatmap do MapLibre GL.
+    Retorna FeatureCollection GeoJSON com polígonos municipais e índice ponderado
+    proporcional à população e crimes para renderização em choropleth no MapLibre GL.
     """
     where_clauses = ["1=1"]
     params = []
@@ -360,7 +385,17 @@ async def get_seguranca_heatmap(
         p_idx += 1
 
     where_sql = " AND ".join(where_clauses)
-    val_expr = "COALESCE(s.qtd_ocorrencias, 0)" if metrica == "ocorrencias" else "COALESCE(s.qtd_vitimas, 0)"
+    is_vitimas = "vitimas" in metrica.lower()
+    val_expr = "COALESCE(s.qtd_vitimas, 0)" if is_vitimas else "COALESCE(s.qtd_ocorrencias, 0)"
+    is_absoluto = "absoluto" in metrica.lower()
+
+    if is_absoluto:
+        weight_sql = "(mc.val::numeric / NULLIF(sa.max_v, 0))"
+        order_sql = "mc.val DESC, mc.populacao_2022 DESC"
+    else:
+        # Modo proporcional: peso varia com a taxa por 100k habitantes (normalizado com teto P95/max)
+        weight_sql = "LEAST(1.0::numeric, mc.taxa_100k::numeric / NULLIF(COALESCE(sa.p95_taxa, sa.max_taxa)::numeric, 0))"
+        order_sql = "mc.taxa_100k DESC, mc.val DESC"
 
     sql = f"""
         WITH stats AS (
@@ -373,31 +408,50 @@ async def get_seguranca_heatmap(
             WHERE {where_sql}
             GROUP BY s.co_municipio
         ),
-        max_val AS (
-            SELECT NULLIF(MAX(val), 0) AS max_v FROM stats
+        mun_calc AS (
+            SELECT
+                m.cd_municipio,
+                m.nm_municipio,
+                COALESCE(m.populacao_2022, 0)::int AS populacao_2022,
+                COALESCE(st.qtd_ocorrencias, 0)::int AS qtd_ocorrencias,
+                COALESCE(st.qtd_vitimas, 0)::int AS qtd_vitimas,
+                COALESCE(st.val, 0)::int AS val,
+                CASE
+                    WHEN COALESCE(m.populacao_2022, 0) > 0 THEN
+                        ROUND((COALESCE(st.val, 0)::numeric / m.populacao_2022 * 100000), 1)::float
+                    ELSE 0.0
+                END AS taxa_100k,
+                m.geom
+            FROM atlas.municipios_mt m
+            LEFT JOIN stats st ON st.co_municipio = m.cd_municipio
+            WHERE m.geom IS NOT NULL
+        ),
+        stats_agg AS (
+            SELECT
+                NULLIF(MAX(val), 0)::numeric AS max_v,
+                NULLIF(MAX(taxa_100k), 0)::numeric AS max_taxa,
+                NULLIF(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY taxa_100k), 0)::numeric AS p95_taxa
+            FROM mun_calc
         )
         SELECT
-            m.cd_municipio,
-            m.nm_municipio,
-            COALESCE(m.populacao_2022, 0)::int AS populacao_2022,
-            COALESCE(st.qtd_ocorrencias, 0)::int AS qtd_ocorrencias,
-            COALESCE(st.qtd_vitimas, 0)::int AS qtd_vitimas,
-            COALESCE(st.val, 0)::int AS val,
-            ROUND(COALESCE((st.val::numeric / NULLIF(mv.max_v, 0)), 0), 4)::float AS weight,
-            CASE
-                WHEN COALESCE(m.populacao_2022, 0) > 0 THEN
-                    ROUND((COALESCE(st.val, 0)::numeric / m.populacao_2022 * 100000), 1)::float
-                ELSE 0.0
-            END AS taxa_100k,
-            -- Polígono simplificado do município (tolerância 0.01° ≈ ~1 km)
-            -- Necessário para renderização como camada fill (choropleth) no MapLibre.
-            -- NÃO usar centroide — fill layer requer geometria poligonal.
-            ST_AsGeoJSON(ST_SimplifyPreserveTopology(m.geom, 0.01), 6)::json AS geometry
-        FROM atlas.municipios_mt m
-        LEFT JOIN stats st ON st.co_municipio = m.cd_municipio
-        CROSS JOIN max_val mv
-        WHERE m.geom IS NOT NULL
-        ORDER BY val DESC
+            mc.cd_municipio,
+            mc.nm_municipio,
+            mc.populacao_2022,
+            mc.qtd_ocorrencias,
+            mc.qtd_vitimas,
+            mc.val,
+            mc.taxa_100k,
+            ROUND(
+                COALESCE(
+                    {weight_sql},
+                    0
+                )::numeric,
+                4
+            )::float AS weight,
+            ST_AsGeoJSON(ST_SimplifyPreserveTopology(mc.geom, 0.01), 6)::json AS geometry
+        FROM mun_calc mc
+        CROSS JOIN stats_agg sa
+        ORDER BY {order_sql}
     """
 
     async with get_connection() as conn:
@@ -417,6 +471,7 @@ async def get_seguranca_heatmap(
                 "val": r["val"],
                 "weight": r["weight"],
                 "taxa_100k": r["taxa_100k"],
+                "is_proporcional": not is_absoluto,
             },
         }
         for r in rows
@@ -430,6 +485,7 @@ async def get_seguranca_heatmap(
             "tipo_crime": tipo_crime or "todos",
             "mes": mes,
             "metrica": metrica,
+            "proporcional": not is_absoluto,
             "total_municipios": len(features),
         },
     }

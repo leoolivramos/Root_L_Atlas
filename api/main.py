@@ -16,6 +16,7 @@ from routers.tiles import router as tiles_router
 from routers.features import router as features_router
 from routers.search import search_router
 from routers.accessibility import router as accessibility_router
+from routers.metadata import router as metadata_router
 
 
 @asynccontextmanager
@@ -40,6 +41,7 @@ app = FastAPI(
     openapi_tags=[
         {"name": "tiles", "description": "Mosaicos Vetoriais (MVT) para MapLibre GL"},
         {"name": "features", "description": "Feições GeoJSON individuais"},
+        {"name": "metadados", "description": "Catálogo de fontes e linhagem de dados"},
         {"name": "search", "description": "Busca alfanumérica"},
         {"name": "acessibilidade", "description": "Análise de acessibilidade a infraestruturas"},
         {"name": "saúde", "description": "Verificação da API"},
@@ -58,6 +60,7 @@ app.add_middleware(
 # Routers
 app.include_router(tiles_router)
 app.include_router(features_router)
+app.include_router(metadata_router)
 app.include_router(search_router)
 app.include_router(accessibility_router)
 

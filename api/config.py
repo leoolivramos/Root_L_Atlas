@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # Banco de dados
     database_url: str = Field(
-        default="postgresql+asyncpg://atlas:123456@localhost:5432/rootl_atlas"
+        default="postgresql+asyncpg://atlas:123456@postgres:5432/rootl_atlas"
     )
 
     # Pool de conexões
