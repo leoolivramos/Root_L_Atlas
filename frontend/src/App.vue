@@ -129,15 +129,16 @@ function handleFeatureClick(
   id: string | number,
   properties: Record<string, unknown>
 ) {
+  const lin = (properties['_lineage'] as Record<string, unknown>) || {}
   selectedFeature.value = {
     layer,
     id,
     properties,
     lineage: {
-      fonte_id: (properties['fonte_id'] as string) ?? '',
-      data_extracao: properties['data_extracao'] as string,
-      url_origem: properties['url_origem'] as string,
-      versao_processamento: properties['versao_processamento'] as string,
+      fonte_id: (properties['fonte_id'] as string) || (lin['fonte_id'] as string) || '',
+      data_extracao: (properties['data_extracao'] as string) || (lin['data_extracao'] as string) || '',
+      url_origem: (properties['url_origem'] as string) || (lin['url_origem'] as string) || '',
+      versao_processamento: (properties['versao_processamento'] as string) || (lin['versao_processamento'] as string) || '',
     },
   }
 }

@@ -147,38 +147,90 @@
           </dl>
         </details>
 
-        <!-- Linhagem de dados -->
-        <details v-if="feature.lineage" class="feature-lineage">
+        <!-- Linhagem e Metadados Canônicos -->
+        <details class="feature-lineage" open>
           <summary class="feature-lineage__summary">
             <div class="summary-left">
               <AtlasIcon name="document" :size="13" />
-              <span>Linhagem e Metadados</span>
+              <span>Linhagem e Metadados Oficiais</span>
             </div>
             <AtlasIcon name="chevron-down" :size="13" />
           </summary>
-          <dl class="feature-lineage__list">
-            <template v-if="feature.lineage.fonte_id">
-              <dt>Fonte</dt>
-              <dd>{{ feature.lineage.fonte_id }}</dd>
-            </template>
-            <template v-if="feature.lineage.data_extracao">
-              <dt>Extração</dt>
-              <dd>{{ feature.lineage.data_extracao }}</dd>
-            </template>
-            <template v-if="feature.lineage.url_origem">
-              <dt>Origem</dt>
-              <dd>
-                <a :href="feature.lineage.url_origem" target="_blank" rel="noopener" class="lineage-link">
-                  <span>Acessar fonte</span>
-                  <AtlasIcon name="external" :size="11" />
-                </a>
-              </dd>
-            </template>
-            <template v-if="feature.lineage.resolucao_original">
-              <dt>Resolução</dt>
-              <dd>{{ feature.lineage.resolucao_original }}</dd>
-            </template>
-          </dl>
+
+          <div class="lineage-wrapper">
+            <!-- Badges de autoridade e domínio -->
+            <div class="lineage-pills">
+              <span class="lineage-pill lineage-pill--agency">{{ activeMeta.orgao_curto }}</span>
+              <span class="lineage-pill lineage-pill--domain">{{ activeMeta.dominio }}</span>
+              <span class="lineage-pill lineage-pill--res">{{ activeMeta.resolucao_espacial }}</span>
+            </div>
+
+            <!-- Lista estruturada de metadados -->
+            <dl class="lineage-list">
+              <div class="lineage-row">
+                <dt>Órgão Emissor</dt>
+                <dd><strong>{{ activeMeta.orgao }}</strong></dd>
+              </div>
+
+              <div class="lineage-row">
+                <dt>Base Canônica</dt>
+                <dd>{{ activeMeta.nome }}</dd>
+              </div>
+
+              <div v-if="formattedExtracaoDate" class="lineage-row">
+                <dt>Data de Extração</dt>
+                <dd>{{ formattedExtracaoDate }}</dd>
+              </div>
+
+              <div v-if="activeVersao" class="lineage-row">
+                <dt>Versão do Processamento</dt>
+                <dd><span class="version-tag">{{ activeVersao }}</span></dd>
+              </div>
+
+              <div v-if="activeMeta.frequencia_atualizacao" class="lineage-row">
+                <dt>Frequência</dt>
+                <dd>{{ activeMeta.frequencia_atualizacao }}</dd>
+              </div>
+
+              <div v-if="activeMeta.licenca" class="lineage-row">
+                <dt>Licença</dt>
+                <dd>{{ activeMeta.licenca }}</dd>
+              </div>
+            </dl>
+
+            <!-- Nota metodológica oficial -->
+            <div v-if="activeMeta.metodologia" class="lineage-methodology">
+              <p class="lineage-methodology__title">Nota Metodológica Oficial:</p>
+              <p class="lineage-methodology__text">{{ activeMeta.metodologia }}</p>
+            </div>
+
+            <!-- Ações e Links Oficiais -->
+            <div class="lineage-actions">
+              <a
+                v-if="activeSourceUrl"
+                :href="activeSourceUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="lineage-btn lineage-btn--primary"
+                title="Acessar repositório original de dados abertos"
+              >
+                <span>Baixar Fonte Original</span>
+                <AtlasIcon name="external" :size="11" />
+              </a>
+
+              <a
+                v-if="activeMeta.url_portal"
+                :href="activeMeta.url_portal"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="lineage-btn lineage-btn--secondary"
+                title="Visitar portal oficial do órgão emissor"
+              >
+                <span>Portal Oficial</span>
+                <AtlasIcon name="external" :size="11" />
+              </a>
+            </div>
+          </div>
         </details>
 
         <!-- Estado de carregamento -->
@@ -229,16 +281,187 @@ const LAYER_LABELS: Record<string, string> = {
   queimadas: 'Queimadas (INPE)',
 }
 
+interface LayerMetaInfo {
+  fonte_id: string
+  nome: string
+  orgao: string
+  orgao_curto: string
+  dominio: string
+  resolucao_espacial: string
+  frequencia_atualizacao: string
+  url_origem: string
+  url_portal?: string
+  licenca: string
+  metodologia: string
+}
+
+const FALLBACK_METAS: Record<string, LayerMetaInfo> = {
+  setores: {
+    fonte_id: 'ibge_censo_2022_agregados_setores',
+    nome: 'Censo Demográfico 2022 — Agregados por Setores Censitários',
+    orgao: 'IBGE — Instituto Brasileiro de Geografia e Estatística',
+    orgao_curto: 'IBGE',
+    dominio: 'Demografia & Território',
+    resolucao_espacial: 'Setor Censitário (intramunicipal)',
+    frequencia_atualizacao: 'Decenal (Censo 2022)',
+    url_origem: 'https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Agregados_por_Setores_Censitarios/malha_com_atributos/setores/csv/BR_setores_CD2022.csv',
+    url_portal: 'https://www.ibge.gov.br/estatisticas/sociais/populacao/22827-censo-demografico-2022.html',
+    licenca: 'Dados Abertos Governamentais (CC-BY 4.0)',
+    metodologia: 'Agregados oficiais do Censo 2022: contagem de população residente, total de domicílios, domicílios ocupados e divisão por sexo.',
+  },
+  municipios: {
+    fonte_id: 'ibge_censo_2022_populacao',
+    nome: 'População Residente Municipal — Censo Demográfico 2022',
+    orgao: 'IBGE — Instituto Brasileiro de Geografia e Estatística',
+    orgao_curto: 'IBGE',
+    dominio: 'Demografia & Território',
+    resolucao_espacial: 'Municipal (141 municípios de MT)',
+    frequencia_atualizacao: 'Decenal / Estimativas Anuais',
+    url_origem: 'https://apisidra.ibge.gov.br/values/t/4709/n6/in%20n3%2051/v/93/p/2022',
+    url_portal: 'https://sidra.ibge.gov.br/tabela/4709',
+    licenca: 'Dados Abertos Governamentais (Domínio Público)',
+    metodologia: 'População oficial do Censo 2022 obtida via API SIDRA (Tabela 4709) consolidada com geometria vetorial para cálculo de densidade demográfica (hab/km²).',
+  },
+  escolas: {
+    fonte_id: 'inep_censo_escolar_2025',
+    nome: 'Censo da Educação Básica — Microdados Georreferenciados',
+    orgao: 'INEP — Ministério da Educação',
+    orgao_curto: 'INEP',
+    dominio: 'Educação Básica',
+    resolucao_espacial: 'Ponto (Escola)',
+    frequencia_atualizacao: 'Anual',
+    url_origem: 'https://download.inep.gov.br/microdados/microdados_educacao_basica_2024.zip',
+    url_portal: 'https://www.gov.br/inep/pt-br/acesso-a-informacao/dados-abertos/microdados/censo-escolar',
+    licenca: 'Dados Abertos Governamentais (Domínio Público)',
+    metodologia: 'Censo Escolar anual com dependência administrativa, modalidades de ensino ofertadas, instalações físicas, salas e matrículas.',
+  },
+  saude: {
+    fonte_id: 'datasus_cnes_estab',
+    nome: 'Cadastro Nacional de Estabelecimentos de Saúde (CNES)',
+    orgao: 'DATASUS / Ministério da Saúde',
+    orgao_curto: 'DATASUS',
+    dominio: 'Saúde Pública',
+    resolucao_espacial: 'Ponto (Estabelecimento)',
+    frequencia_atualizacao: 'Mensal',
+    url_origem: 'ftp://ftp.datasus.gov.br/dissemin/publicos/CNES/200508_/Dados/ST/',
+    url_portal: 'http://cnes.datasus.gov.br/',
+    licenca: 'Dados Abertos Governamentais (Domínio Público)',
+    metodologia: 'Cadastro oficial de estabelecimentos de saúde, tipologia assistencial, leitos totais e leitos SUS, esfera administrativa e gestora.',
+  },
+  malha_viaria: {
+    fonte_id: 'osm_mt_pbf',
+    nome: 'OpenStreetMap — Extrato Regional da Rede Viária (Mato Grosso)',
+    orgao: 'OpenStreetMap Contributors / Geofabrik',
+    orgao_curto: 'OSM',
+    dominio: 'Infraestrutura Viária',
+    resolucao_espacial: 'Segmento Viário (LineString)',
+    frequencia_atualizacao: 'Semanal / Contínua',
+    url_origem: 'https://download.geofabrik.de/south-america/brazil/centro-oeste-latest.osm.pbf',
+    url_portal: 'https://www.openstreetmap.org/',
+    licenca: 'Open Database License (ODbL 1.0)',
+    metodologia: 'Malha viária colaborativa filtrada para rodovias federais e estaduais, vias arteriais e coletoras de Mato Grosso.',
+  },
+  seguranca: {
+    fonte_id: 'sinesp_vde_mun',
+    nome: 'Sistema Nacional de Informações de Segurança Pública (SINESP)',
+    orgao: 'Ministério da Justiça e Segurança Pública (MJSP)',
+    orgao_curto: 'SINESP / MJSP',
+    dominio: 'Segurança Pública',
+    resolucao_espacial: 'Municipal (Mato Grosso)',
+    frequencia_atualizacao: 'Mensal',
+    url_origem: 'https://www.gov.br/mj/pt-br/assuntos/sua-seguranca/seguranca-publica/sinesp-1/dados-abertos-sinesp',
+    url_portal: 'https://www.gov.br/mj/pt-br/assuntos/sua-seguranca/seguranca-publica/sinesp-1',
+    licenca: 'Dados Abertos Governamentais (Domínio Público)',
+    metodologia: 'Registros mensais de ocorrências policiais e vítimas por tipologia criminal. Resolução máxima é MUNICIPAL (sem extrapolação para bairros).',
+  },
+  queimadas: {
+    fonte_id: 'inpe_bdqueimadas_mensal',
+    nome: 'BDQueimadas — Programa Queimadas (INPE)',
+    orgao: 'INPE — Instituto Nacional de Pesquisas Espaciais',
+    orgao_curto: 'INPE',
+    dominio: 'Meio Ambiente & Clima',
+    resolucao_espacial: 'Ponto (Sensor Ótico)',
+    frequencia_atualizacao: 'Tempo Real / Mensal Consolidado',
+    url_origem: 'https://dataserver-coids.inpe.br/queimadas/queimadas/focos/csv/mensal/Brasil/',
+    url_portal: 'https://terrabrasilis.dpi.inpe.br/queimadas/bdqueimadas/',
+    licenca: 'Dados Abertos Governamentais (Domínio Público)',
+    metodologia: 'Detecção termal de calor a partir de satélites ópticos (Aqua, Terra, NOAA). Contém potência radiativa do fogo (FRP) e risco de fogo.',
+  },
+}
+
+const layerMetaRemote = ref<Record<string, any> | null>(null)
+
+const activeMeta = computed<LayerMetaInfo>(() => {
+  const layer = props.feature?.layer ?? 'setores'
+  const fallback = FALLBACK_METAS[layer] ?? FALLBACK_METAS.setores
+  const remote = layerMetaRemote.value
+
+  if (!remote) return fallback
+
+  return {
+    fonte_id: remote.fonte_id || fallback.fonte_id,
+    nome: remote.nome || fallback.nome,
+    orgao: remote.orgao || fallback.orgao,
+    orgao_curto: fallback.orgao_curto,
+    dominio: remote.dominio || fallback.dominio,
+    resolucao_espacial: remote.resolucao_espacial || fallback.resolucao_espacial,
+    frequencia_atualizacao: remote.frequencia_atualizacao || fallback.frequencia_atualizacao,
+    url_origem: remote.url_origem || fallback.url_origem,
+    url_portal: remote.url_portal || fallback.url_portal,
+    licenca: remote.licenca || fallback.licenca,
+    metodologia: remote.metodologia || fallback.metodologia,
+  }
+})
+
+const activeSourceUrl = computed(() => {
+  return (
+    props.feature?.lineage?.url_origem ||
+    (props.feature?.properties?.['url_origem'] as string) ||
+    activeMeta.value.url_origem
+  )
+})
+
+const activeVersao = computed(() => {
+  return (
+    props.feature?.lineage?.versao_processamento ||
+    (props.feature?.properties?.['versao_processamento'] as string) ||
+    '1.0.0'
+  )
+})
+
+const formattedExtracaoDate = computed(() => {
+  const raw =
+    props.feature?.lineage?.data_extracao ||
+    (props.feature?.properties?.['data_extracao'] as string)
+  if (!raw) return 'Consolidado Oficial 2022–2026'
+  try {
+    const d = new Date(raw)
+    if (isNaN(d.getTime())) return String(raw)
+    return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
+  } catch {
+    return String(raw)
+  }
+})
+
 const layerIconName = computed<IconName>(() => LAYER_ICON_MAP[props.feature?.layer ?? ''] ?? 'pin')
 const layerLabel = computed(() => LAYER_LABELS[props.feature?.layer ?? ''] ?? 'Feição')
 
 const primaryName = computed(() => {
   const p = props.feature?.properties
+  if (props.feature?.layer === 'setores') {
+    return (
+      (p?.['nm_bairro'] as string) ||
+      (p?.['nm_distrito'] as string) ||
+      `Setor ${p?.['cd_setor'] ?? props.feature?.id ?? ''}`
+    )
+  }
+  if (props.feature?.layer === 'municipios') {
+    return (p?.['nm_municipio'] as string) ?? (p?.['municipio'] as string) ?? 'Município'
+  }
   return (
-    p?.['nm_municipio'] ??
-    p?.['municipio'] ??
     p?.['no_entidade'] ??
     p?.['no_fantasia'] ??
+    p?.['nm_municipio'] ??
     p?.['name'] ??
     p?.['highway'] ??
     p?.['cd_setor'] ??
@@ -250,7 +473,16 @@ const primaryName = computed(() => {
 const secondaryInfo = computed(() => {
   const p = props.feature?.properties
   if (props.feature?.layer === 'escolas') return p?.['nm_dependencia'] as string
-  if (props.feature?.layer === 'setores') return p?.['nm_tipo_setor'] as string
+  if (props.feature?.layer === 'setores') {
+    const parts = [
+      p?.['nm_municipio'],
+      p?.['nm_tipo_setor'] || 'Setor Censitário'
+    ].filter(Boolean)
+    return parts.join(' · ')
+  }
+  if (props.feature?.layer === 'municipios') {
+    return `Mato Grosso · IBGE ${p?.['cd_municipio'] || props.feature?.id || ''}`
+  }
   if (props.feature?.layer === 'saude') return p?.['nm_tp_unidade'] as string
   if (props.feature?.layer === 'malha_viaria') return (p?.['highway'] as string)?.toUpperCase()
   if (props.feature?.layer === 'seguranca') return `Ocorrências SINESP · ${p?.['nm_municipio'] || ''}`
@@ -264,24 +496,55 @@ const quickMetrics = computed(() => {
   if (!p) return []
 
   if (props.feature?.layer === 'setores') {
-    return [
+    const metrics = [
       { label: 'População', value: fmtNum(p['pop_total'] as number) },
       { label: 'Domicílios', value: fmtNum(p['domicilios_total'] as number) },
-      { label: 'Área (km²)', value: fmtNum(p['area_km2'] as number, 2) },
     ]
+    if (p['domicilios_ocupados'] != null && Number(p['domicilios_ocupados']) > 0) {
+      metrics.push({ label: 'Ocupados', value: fmtNum(p['domicilios_ocupados'] as number) })
+    }
+    if (p['pop_homens'] != null && p['pop_mulheres'] != null && Number(p['pop_homens']) > 0) {
+      metrics.push({ label: 'Homens / Mulheres', value: `${fmtNum(p['pop_homens'] as number)} / ${fmtNum(p['pop_mulheres'] as number)}` })
+    }
+    if (p['area_km2'] != null) {
+      metrics.push({ label: 'Área (km²)', value: fmtNum(p['area_km2'] as number, 2) })
+    }
+    if (p['dist_escola_km'] != null && Number(p['dist_escola_km']) >= 0) {
+      metrics.push({ label: 'Escola Próxima', value: `${Number(p['dist_escola_km']).toFixed(1)} km` })
+    }
+    return metrics
   }
+
+  if (props.feature?.layer === 'municipios') {
+    const metrics = [
+      { label: 'Pop. (Censo 2022)', value: fmtNum(p['populacao_2022'] as number) },
+    ]
+    if (p['densidade_demografica'] != null) {
+      metrics.push({ label: 'Densidade', value: `${fmtNum(p['densidade_demografica'] as number, 1)} hab/km²` })
+    }
+    if (p['domicilios_total'] != null || p['qt_domicilios'] != null) {
+      metrics.push({ label: 'Domicílios', value: fmtNum((p['domicilios_total'] ?? p['qt_domicilios']) as number) })
+    }
+    if (p['qt_setores'] != null) {
+      metrics.push({ label: 'Setores IBGE', value: fmtNum(p['qt_setores'] as number) })
+    }
+    if (p['qt_escolas'] != null || p['qt_escolas_total'] != null) {
+      metrics.push({ label: 'Escolas', value: fmtNum((p['qt_escolas'] ?? p['qt_escolas_total']) as number) })
+    }
+    if (p['qt_estabelecimentos_saude'] != null) {
+      metrics.push({ label: 'Saúde', value: fmtNum(p['qt_estabelecimentos_saude'] as number) })
+    }
+    if (p['area_km2'] != null) {
+      metrics.push({ label: 'Área (km²)', value: fmtNum(p['area_km2'] as number, 1) })
+    }
+    return metrics
+  }
+
   if (props.feature?.layer === 'escolas') {
     return [
       { label: 'Matrículas', value: fmtNum(p['qt_mat_bas'] as number) },
       { label: 'Salas', value: p['qt_salas_utilizadas'] ?? '—' },
       { label: 'Rede', value: p['nm_dependencia'] ?? '—' },
-    ]
-  }
-  if (props.feature?.layer === 'municipios') {
-    return [
-      { label: 'Pop. (2022)', value: fmtNum(p['populacao_2022'] as number) },
-      { label: 'Área (km²)', value: fmtNum(p['area_km2'] as number, 1) },
-      { label: 'Saúde', value: p['qt_estabelecimentos_saude'] ?? '—' },
     ]
   }
   if (props.feature?.layer === 'saude') {
@@ -300,6 +563,8 @@ const quickMetrics = computed(() => {
   }
   if (props.feature?.layer === 'seguranca') {
     return [
+      { label: 'Taxa / 100k hab.', value: p['taxa_100k'] != null ? fmtNum(Number(p['taxa_100k']), 1) : '—' },
+      { label: 'População', value: p['populacao_2022'] ? fmtNum(Number(p['populacao_2022'])) : '—' },
       { label: 'Ocorrências', value: fmtNum((p['qtd_ocorrencias'] ?? p['val'] ?? 0) as number) },
       { label: 'Vítimas', value: fmtNum((p['qtd_vitimas'] ?? 0) as number) },
       { label: 'Índice Relativo', value: p['weight'] != null ? `${Math.round(Number(p['weight']) * 100)}%` : '—' },
@@ -345,7 +610,7 @@ function formatValue(val: unknown): string {
   return String(val)
 }
 
-// Carrega dados contextuais quando uma feição é selecionada
+// Carrega dados contextuais e metadados quando uma feição é selecionada
 watch(
   () => props.feature,
   async (feat) => {
@@ -353,8 +618,21 @@ watch(
     munSeguranca.value = null
     munCobertura.value = null
     munQueimadas.value = null
+    layerMetaRemote.value = null
 
     if (!feat) return
+
+    // Busca metadados da camada
+    axios
+      .get(`${API}/metadata/layer/${feat.layer}`)
+      .then((res) => {
+        if (res.data?.metadata) {
+          layerMetaRemote.value = res.data.metadata
+        }
+      })
+      .catch(() => {
+        layerMetaRemote.value = null
+      })
 
     if (feat.layer === 'setores') {
       requestsStore.setLoading('accessibility')
@@ -371,14 +649,18 @@ watch(
     } else if (feat.layer === 'municipios' || feat.layer === 'seguranca' || feat.layer === 'queimadas') {
       try {
         const munId = feat.properties?.['cd_municipio'] || feat.properties?.['municipio_id'] || feat.id
-        const [resSeg, resCob, resQueim] = await Promise.all([
+        const [resSeg, resCob, resQueim, resMun] = await Promise.all([
           axios.get(`${API}/features/municipio/${munId}/seguranca`).catch(() => null),
           axios.get(`${API}/features/municipio/${munId}/cobertura_solo`).catch(() => null),
           axios.get(`${API}/features/municipio/${munId}/queimadas`).catch(() => null),
+          feat.layer === 'municipios' ? axios.get(`${API}/features/municipio/${munId}`).catch(() => null) : Promise.resolve(null),
         ])
         if (resSeg?.data) munSeguranca.value = resSeg.data
         if (resCob?.data) munCobertura.value = resCob.data
         if (resQueim?.data) munQueimadas.value = resQueim.data
+        if (resMun?.data?.properties) {
+          Object.assign(feat.properties, resMun.data.properties)
+        }
       } catch {
         // Ignora erros não impeditivos
       }
@@ -595,8 +877,7 @@ watch(
   gap: 0.4rem;
 }
 
-.feature-attrs__list,
-.feature-lineage__list {
+.feature-attrs__list {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.25rem 0.75rem;
@@ -604,32 +885,152 @@ watch(
   background: #ffffff;
 }
 
-dt {
-  font-size: 0.68rem;
-  color: #64748b;
-  text-transform: capitalize;
+.lineage-wrapper {
+  padding: 0.75rem;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
 }
 
-dd {
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: #0f172a;
+.lineage-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.lineage-pill {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.lineage-pill--agency {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.lineage-pill--domain {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.lineage-pill--res {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.lineage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
   margin: 0;
+}
+
+.lineage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  border-bottom: 1px dashed #f1f5f9;
+  padding-bottom: 0.3rem;
+}
+
+.lineage-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.lineage-row dt {
+  font-size: 0.7rem;
+  color: #64748b;
+  font-weight: 500;
+  min-width: 95px;
+  text-transform: none;
+}
+
+.lineage-row dd {
+  font-size: 0.72rem;
+  color: #0f172a;
   text-align: right;
   word-break: break-word;
+  margin: 0;
 }
 
-.lineage-link {
+.version-tag {
+  display: inline-block;
+  font-family: monospace;
+  font-size: 0.68rem;
+  background: #f1f5f9;
+  color: #0f172a;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+}
+
+.lineage-methodology {
+  background: #f8fafc;
+  border-left: 3px solid #2563eb;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0 4px 4px 0;
+}
+
+.lineage-methodology__title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #334155;
+  margin: 0 0 0.15rem;
+}
+
+.lineage-methodology__text {
+  font-size: 0.68rem;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.lineage-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+}
+
+.lineage-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  color: #2563eb;
-  text-decoration: none;
+  justify-content: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
   font-weight: 600;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  text-decoration: none;
+  transition: all 0.15s ease;
 }
 
-.lineage-link:hover {
-  text-decoration: underline;
+.lineage-btn--primary {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.lineage-btn--primary:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.lineage-btn--secondary {
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.lineage-btn--secondary:hover {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 .feature-detail__loading {
