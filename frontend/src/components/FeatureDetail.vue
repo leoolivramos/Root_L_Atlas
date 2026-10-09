@@ -133,20 +133,6 @@
           </div>
         </div>
 
-        <!-- Atributos detalhados -->
-        <details class="feature-attrs" open>
-          <summary class="feature-attrs__summary">
-            <span>Atributos cadastrais</span>
-            <AtlasIcon name="chevron-down" :size="13" />
-          </summary>
-          <dl class="feature-attrs__list">
-            <template v-for="(val, key) in filteredProps" :key="key">
-              <dt class="feature-attrs__key">{{ formatKey(String(key)) }}</dt>
-              <dd class="feature-attrs__val">{{ formatValue(val) }}</dd>
-            </template>
-          </dl>
-        </details>
-
         <!-- Linhagem e Metadados Canônicos -->
         <details class="feature-lineage" open>
           <summary class="feature-lineage__summary">
