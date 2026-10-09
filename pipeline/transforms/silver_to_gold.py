@@ -124,6 +124,8 @@ def setores_to_gold(
         "cd_setor", "cd_municipio", "nm_municipio", "cd_uf", "sg_uf",
         "cd_distrito", "nm_distrito", "cd_subdistrito", "nm_subdistrito",
         "nm_bairro", "tipo_setor", "nm_tipo_setor",
+        "pop_total", "domicilios_total", "domicilios_ocupados",
+        "pop_homens", "pop_mulheres", "renda_media_domicilio",
         "area_km2", "centroide",
         "fonte_id", "versao_processamento",
         "geometry",
@@ -150,15 +152,24 @@ def generate_municipios_gold(gdf_setores: gpd.GeoDataFrame, gold_path: Path) -> 
     import unicodedata
     logger.info("[Gold] Gerando municípios a partir da dissolução dos setores censitários...")
 
+    agg_dict = {
+        "nm_municipio": "first",
+        "sg_uf": "first",
+        "cd_uf": "first",
+    }
+    if "pop_total" in gdf_setores.columns:
+        agg_dict["pop_total"] = "sum"
+    if "domicilios_total" in gdf_setores.columns:
+        agg_dict["domicilios_total"] = "sum"
+
     mun_gdf = gdf_setores.dissolve(
         by="cd_municipio",
         as_index=False,
-        aggfunc={
-            "nm_municipio": "first",
-            "sg_uf": "first",
-            "cd_uf": "first",
-        },
+        aggfunc=agg_dict,
     )
+    if "pop_total" in mun_gdf.columns:
+        mun_gdf = mun_gdf.rename(columns={"pop_total": "populacao_2022"})
+
     from shapely.geometry import MultiPolygon, Polygon
     mun_gdf["geometry"] = mun_gdf["geometry"].apply(
         lambda g: MultiPolygon([g]) if isinstance(g, Polygon) else g
@@ -169,7 +180,7 @@ def generate_municipios_gold(gdf_setores: gpd.GeoDataFrame, gold_path: Path) -> 
 
     mun_gdf["nm_municipio_ascii"] = mun_gdf["nm_municipio"].apply(strip_accents)
     mun_gdf["nm_uf"] = "Mato Grosso"
-    mun_gdf["fonte_id"] = "ibge_censo_2022_setores"
+    mun_gdf["fonte_id"] = "ibge_censo_2022_populacao"
     mun_gdf["versao_processamento"] = "1.0.0"
     mun_gdf["centroide"] = mun_gdf.geometry.centroid
 

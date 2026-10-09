@@ -144,15 +144,28 @@ BEGIN
     FROM (
         SELECT
             s.cd_setor,
+            s.cd_municipio,
             s.nm_municipio,
+            COALESCE(s.nm_bairro, s.nm_distrito, s.nm_tipo_setor) AS nm_bairro,
+            s.nm_distrito,
             s.tipo_setor,
             s.nm_tipo_setor,
             s.pop_total,
             s.domicilios_total,
+            s.domicilios_ocupados,
+            s.pop_homens,
+            s.pop_mulheres,
+            s.area_km2::float8 AS area_km2,
             s.renda_media_domicilio::float8 AS renda_media_domicilio,
             COALESCE(a.distancia_eucl_km::float8, -1.0) AS dist_escola_km,
+            COALESCE(a.dist_fund_eucl_km::float8, -1.0) AS dist_fund_km,
             a.qt_escolas_5km,
             a.qt_escolas_publicas_5km,
+            a.pop_sem_acesso_proxy,
+            s.fonte_id,
+            TO_CHAR(s.data_extracao, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS data_extracao,
+            s.url_origem,
+            s.versao_processamento,
             -- Simplificação adaptativa ao zoom
             ST_AsMVTGeom(
                 CASE
@@ -197,6 +210,7 @@ BEGIN
             e.tp_dependencia,
             e.nm_dependencia,
             e.no_municipio,
+            e.no_bairro,
             e.in_inf_creche,
             e.in_inf_pre_escola,
             e.in_fund_anos_iniciais,
@@ -205,6 +219,11 @@ BEGIN
             e.in_medio_integrado,
             e.in_eja,
             e.qt_mat_bas,
+            e.ano_censo,
+            e.fonte_id,
+            TO_CHAR(e.data_extracao, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS data_extracao,
+            e.url_origem,
+            e.versao_processamento,
             ST_AsMVTGeom(
                 ST_Transform(e.geom, 3857),
                 ST_TileEnvelope(p_z, p_x, p_y),
@@ -235,9 +254,17 @@ BEGIN
         SELECT
             m.cd_municipio,
             m.nm_municipio,
-            m.area_km2,
+            m.area_km2::float8 AS area_km2,
             m.populacao_2022,
-            (SELECT COUNT(*) FROM atlas.escolas e WHERE e.co_municipio = m.cd_municipio) AS qt_escolas,
+            ROUND((m.populacao_2022 / NULLIF(m.area_km2, 0))::numeric, 2)::float8 AS densidade_demografica,
+            (SELECT COUNT(*) FROM atlas.setores_censitarios s WHERE s.cd_municipio = m.cd_municipio)::int AS qt_setores,
+            (SELECT COUNT(*) FROM atlas.escolas e WHERE e.co_municipio = m.cd_municipio)::int AS qt_escolas,
+            (SELECT COUNT(*) FROM atlas.estabelecimentos_saude es WHERE es.co_municipio = m.cd_municipio)::int AS qt_estabelecimentos_saude,
+            (SELECT COALESCE(SUM(s.domicilios_total), 0) FROM atlas.setores_censitarios s WHERE s.cd_municipio = m.cd_municipio)::int AS domicilios_total,
+            m.fonte_id,
+            TO_CHAR(m.data_extracao, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS data_extracao,
+            m.url_origem,
+            m.versao_processamento,
             ST_AsMVTGeom(
                 -- Simplificação mais agressiva em zooms baixos
                 CASE
@@ -283,6 +310,10 @@ BEGIN
             es.qt_leitos_sus,
             es.qt_leitos_total,
             es.no_municipio,
+            es.fonte_id,
+            TO_CHAR(es.data_extracao, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS data_extracao,
+            es.url_origem,
+            es.versao_processamento,
             ST_AsMVTGeom(
                 ST_Transform(es.geom, 3857),
                 ST_TileEnvelope(p_z, p_x, p_y),
@@ -320,6 +351,9 @@ BEGIN
             v.oneway,
             v.maxspeed,
             v.surface,
+            'osm_mt_pbf'::text AS fonte_id,
+            'https://download.geofabrik.de/south-america/brazil/centro-oeste-latest.osm.pbf'::text AS url_origem,
+            'OpenStreetMap contributors (ODbL 1.0)'::text AS versao_processamento,
             ST_AsMVTGeom(
                 ST_Transform(v.geom, 3857),
                 ST_TileEnvelope(p_z, p_x, p_y),
@@ -401,6 +435,10 @@ BEGIN
             f.precipitacao::float8 AS precipitacao,
             f.risco_fogo::float8 AS risco_fogo,
             f.frp::float8 AS frp,
+            f.fonte_id,
+            TO_CHAR(f.data_extracao, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS data_extracao,
+            f.url_origem,
+            'bdqueimadas_v1'::text AS versao_processamento,
             ST_AsMVTGeom(
                 ST_Transform(f.geom, 3857),
                 ST_TileEnvelope(p_z, p_x, p_y),

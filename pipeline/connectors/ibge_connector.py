@@ -153,3 +153,58 @@ class IBGEMunicipiosConnector(BaseConnector):
                 return any(n.endswith(".shp") for n in zf.namelist())
         except zipfile.BadZipFile:
             return False
+
+
+class IBGEAgregadosSetoresConnector(BaseConnector):
+    """
+    Conector para a base oficial de Agregados por Setores Censitários
+    do Censo Demográfico 2022 do IBGE (BR_setores_CD2022.csv).
+    Contém contagem de população residente, total de domicílios,
+    domicílios ocupados e divisão por sexo.
+    """
+
+    SOURCE_ID = "ibge_censo_2022_agregados_setores"
+    DOWNLOAD_URL = (
+        "https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/"
+        "Agregados_por_Setores_Censitarios/malha_com_atributos/setores/csv/BR_setores_CD2022.csv"
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(source_id=self.SOURCE_ID, **kwargs)
+
+    def get_download_url(self, **kwargs: Any) -> str:
+        return self.DOWNLOAD_URL
+
+    def get_local_filename(self, url: str, **kwargs: Any) -> str:
+        return "BR_setores_CD2022.csv"
+
+    def validate_raw_file(self, local_path: Path) -> bool:
+        if not local_path.exists():
+            return False
+        # Arquivo nacional do IBGE tem ~300MB
+        return local_path.stat().st_size > 5_000_000
+
+
+class IBGESidraMunicipiosConnector(BaseConnector):
+    """
+    Conector para a API SIDRA do IBGE (Tabela 4709 - Censo 2022).
+    Extrai a população residente oficial dos 141 municípios de MT.
+    """
+
+    SOURCE_ID = "ibge_censo_2022_populacao"
+    DOWNLOAD_URL = "https://apisidra.ibge.gov.br/values/t/4709/n6/in%20n3%2051/v/93/p/2022"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(source_id=self.SOURCE_ID, **kwargs)
+
+    def get_download_url(self, **kwargs: Any) -> str:
+        return self.DOWNLOAD_URL
+
+    def get_local_filename(self, url: str, **kwargs: Any) -> str:
+        return "sidra_4709_populacao_mt_2022.json"
+
+    def validate_raw_file(self, local_path: Path) -> bool:
+        if not local_path.exists():
+            return False
+        return local_path.stat().st_size > 1000
+

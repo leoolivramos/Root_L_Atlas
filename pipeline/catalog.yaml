@@ -54,6 +54,58 @@ sources:
       cron: "0 3 1 * *"   # 1º dia de cada mês, 03h
       retry_count: 3
 
+  - id: ibge_censo_2022_agregados_setores
+    name: "Agregados por Setores Censitários — População e Domicílios"
+    agency: "IBGE — Instituto Brasileiro de Geografia e Estatística"
+    domain: "território"
+    format: "CSV"
+    spatial_resolution: "setor_censitario"
+    update_frequency: "decenal"
+    crs: "EPSG:4674"
+    target_crs: "EPSG:4326"
+    scope:
+      state: "MT"
+      ibge_state_code: "51"
+    urls:
+      primary: "https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Agregados_por_Setores_Censitarios/malha_com_atributos/setores/csv/BR_setores_CD2022.csv"
+      download_page: "https://www.ibge.gov.br/estatisticas/sociais/populacao/22827-censo-demografico-2022.html"
+    bronze_path: "bronze/ibge/censo_2022_agregados/"
+    gold_table: "setores_censitarios"
+    primary_key: "CD_SETOR"
+    canonical_pk: "cd_setor"
+    column_mapping:
+      CD_SETOR: cd_setor
+      v0001: pop_total
+      v0002: domicilios_total
+      v0003: domicilios_ocupados
+      v0004: pop_homens
+      v0005: pop_mulheres
+    validations:
+      - "cd_setor is not null"
+      - "pop_total >= 0"
+      - "domicilios_total >= 0"
+
+  - id: ibge_censo_2022_populacao
+    name: "População Residente Municipal Oficial (Censo 2022)"
+    agency: "IBGE — Instituto Brasileiro de Geografia e Estatística"
+    domain: "demografia"
+    format: "JSON (API REST SIDRA)"
+    spatial_resolution: "municipio"
+    update_frequency: "decenal"
+    scope:
+      state: "MT"
+      ibge_state_code: "51"
+    urls:
+      primary: "https://apisidra.ibge.gov.br/values/t/4709/n6/in%20n3%2051/v/93/p/2022"
+      portal: "https://sidra.ibge.gov.br/tabela/4709"
+    bronze_path: "bronze/ibge/sidra_4709/"
+    gold_table: "municipios_mt"
+    primary_key: "D1C"
+    canonical_pk: "cd_municipio"
+    validations:
+      - "cd_municipio is not null"
+      - "populacao_2022 > 0"
+
   - id: inep_censo_escolar_2025
     name: "Microdados do Censo Escolar"
     agency: "INEP — Instituto Nacional de Estudos e Pesquisas Educacionais"
