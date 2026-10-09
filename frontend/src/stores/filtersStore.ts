@@ -6,7 +6,7 @@ import axios from 'axios'
 const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 export type DependenciaRede = 'todas' | 'publica' | 'federal' | 'estadual' | 'municipal' | 'privada'
-export type SegurancaMetrica = 'ocorrencias' | 'vitimas'
+export type SegurancaMetrica = 'taxa_100k' | 'taxa_vitimas' | 'ocorrencias' | 'vitimas' | 'ocorrencias_absoluto' | 'vitimas_absoluto'
 export type QueimadasMetrica = 'focos' | 'frp_medio' | 'risco_medio'
 export type HealthType = 'todos' | 'hospital' | 'ubs' | 'policlinica' | 'pronto_socorro' | 'consultorio'
 export type RoadType = 'todos' | 'motorway' | 'trunk' | 'primary' | 'secondary' | 'tertiary'
@@ -17,7 +17,7 @@ export const useFiltersStore = defineStore('filters', () => {
   const activeTab = ref<FilterTab>('seguranca')
 
   // ─── Filtros de Segurança Pública (SINESP Choropleth) ──────────────────────
-  const segurancaMetrica = ref<SegurancaMetrica>('ocorrencias')
+  const segurancaMetrica = ref<SegurancaMetrica>('taxa_100k')
   const segurancaAno = ref<number | null>(2024)
   const segurancaTipoCrime = ref<string>('todos')
   const segurancaMes = ref<number | null>(null)
@@ -97,7 +97,7 @@ export const useFiltersStore = defineStore('filters', () => {
   }
 
   function resetSegurancaFilters() {
-    segurancaMetrica.value = 'ocorrencias'
+    segurancaMetrica.value = 'taxa_100k'
     segurancaAno.value = disponiveisAnos.value[0] ?? 2024
     segurancaTipoCrime.value = 'todos'
     segurancaMes.value = null

@@ -184,7 +184,7 @@ function addSegurancaChoroplethLayer(cfg: LayerConfig) {
     })
   }
 
-  // Fill: polígono municipal colorido por intensidade
+  // Fill: polígono municipal colorido pelo índice por 100k habitantes
   if (!map.getLayer(choroplethId)) {
     map.addLayer({
       id: choroplethId,
@@ -192,17 +192,18 @@ function addSegurancaChoroplethLayer(cfg: LayerConfig) {
       source: sourceId,
       paint: {
         'fill-color': [
-          'interpolate', ['linear'], ['get', 'weight'],
-          0,   'rgba(240, 249, 255, 0.1)',
-          0.1, '#bfdbfe',
-          0.3, '#60a5fa',
-          0.5, '#f59e0b',
-          0.7, '#ef4444',
-          1.0, '#7f1d1d',
+          'interpolate', ['linear'], ['coalesce', ['to-number', ['get', 'weight']], 0],
+          0,    'rgba(240, 249, 255, 0.12)',
+          0.15, '#bfdbfe',
+          0.35, '#60a5fa',
+          0.55, '#f59e0b',
+          0.75, '#f97316',
+          0.90, '#ef4444',
+          1.0,  '#7f1d1d',
         ],
         'fill-opacity': [
           'case',
-          ['>', ['get', 'weight'], 0], cfg.opacity * 0.82,
+          ['>', ['coalesce', ['to-number', ['get', 'weight']], 0], 0], cfg.opacity * 0.82,
           0.05,
         ],
       },
@@ -218,10 +219,11 @@ function addSegurancaChoroplethLayer(cfg: LayerConfig) {
       source: sourceId,
       paint: {
         'line-color': [
-          'interpolate', ['linear'], ['get', 'weight'],
-          0,   '#94a3b8',
-          0.5, '#f87171',
-          1.0, '#7f1d1d',
+          'interpolate', ['linear'], ['coalesce', ['to-number', ['get', 'weight']], 0],
+          0,    '#94a3b8',
+          0.5,  '#f59e0b',
+          0.8,  '#ef4444',
+          1.0,  '#7f1d1d',
         ],
         'line-width': [
           'interpolate', ['linear'], ['zoom'],
@@ -609,9 +611,24 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
             <strong>${props['cd_municipio'] ?? ''}</strong>
           </div>
           <div class="clean-popup__row">
-            <span>População (2022)</span>
+            <span>População (Censo 2022)</span>
             <strong>${props['populacao_2022'] ? Number(props['populacao_2022']).toLocaleString('pt-BR') : '—'}</strong>
           </div>
+          ${props['densidade_demografica'] != null ? `
+          <div class="clean-popup__row">
+            <span>Densidade Demográfica</span>
+            <strong>${Number(props['densidade_demografica']).toLocaleString('pt-BR', { maximumFractionDigits: 2 })} hab/km²</strong>
+          </div>` : ''}
+          ${props['domicilios_total'] != null && Number(props['domicilios_total']) > 0 ? `
+          <div class="clean-popup__row">
+            <span>Total de Domicílios</span>
+            <strong>${Number(props['domicilios_total']).toLocaleString('pt-BR')}</strong>
+          </div>` : ''}
+          ${props['qt_setores'] != null ? `
+          <div class="clean-popup__row">
+            <span>Setores Censitários</span>
+            <strong>${Number(props['qt_setores']).toLocaleString('pt-BR')}</strong>
+          </div>` : ''}
           ${props['area_km2'] ? `
           <div class="clean-popup__row">
             <span>Área territorial</span>
@@ -623,38 +640,42 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
   }
 
   if (layer === 'setores') {
+    const nomeBairro = props['nm_bairro'] || props['nm_distrito'] || 'Setor Censitário'
+    const sub = [props['nm_municipio'], props['nm_tipo_setor']].filter(Boolean).join(' · ')
     return `
       <div class="clean-popup">
-        <div class="clean-popup__badge">Setor Censitário</div>
-        <h4 class="clean-popup__title">${props['nm_municipio'] ?? 'Setor'}</h4>
+        <div class="clean-popup__badge">Setor Censitário (IBGE)</div>
+        <h4 class="clean-popup__title">${nomeBairro}</h4>
+        ${sub ? `<div style="font-size: 0.72rem; color: #64748b; margin-top: -4px; margin-bottom: 6px;">${sub}</div>` : ''}
         <div class="clean-popup__rows">
           <div class="clean-popup__row">
-            <span>Código</span>
+            <span>Código do Setor</span>
             <strong>${props['cd_setor'] ?? ''}</strong>
           </div>
           <div class="clean-popup__row">
-            <span>Tipologia</span>
-            <strong>${props['nm_tipo_setor'] ?? 'Urbano/Rural'}</strong>
+            <span>População Residente</span>
+            <strong>${props['pop_total'] != null ? Number(props['pop_total']).toLocaleString('pt-BR') : '—'}</strong>
           </div>
           <div class="clean-popup__row">
-            <span>População</span>
-            <strong>${Number(props['pop_total'] ?? 0).toLocaleString('pt-BR')}</strong>
+            <span>Total de Domicílios</span>
+            <strong>${props['domicilios_total'] != null ? Number(props['domicilios_total']).toLocaleString('pt-BR') : '—'}</strong>
           </div>
+          ${props['domicilios_ocupados'] != null ? `
           <div class="clean-popup__row">
-            <span>Domicílios</span>
-            <strong>${Number(props['domicilios_total'] ?? 0).toLocaleString('pt-BR')}</strong>
-          </div>
-          ${props['renda_media_domicilio'] != null ? `
+            <span>Domicílios Ocupados</span>
+            <strong>${Number(props['domicilios_ocupados']).toLocaleString('pt-BR')}</strong>
+          </div>` : ''}
+          ${props['pop_homens'] != null && props['pop_mulheres'] != null && Number(props['pop_homens']) > 0 ? `
           <div class="clean-popup__row">
-            <span>Renda Média</span>
-            <strong>R$ ${Number(props['renda_media_domicilio']).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+            <span>Homens / Mulheres</span>
+            <strong>${Number(props['pop_homens']).toLocaleString('pt-BR')} / ${Number(props['pop_mulheres']).toLocaleString('pt-BR')}</strong>
           </div>` : ''}
           ${props['area_km2'] != null ? `
           <div class="clean-popup__row">
             <span>Área</span>
             <strong>${Number(props['area_km2']).toFixed(2)} km²</strong>
           </div>` : ''}
-          ${props['dist_escola_km'] != null ? `
+          ${props['dist_escola_km'] != null && Number(props['dist_escola_km']) >= 0 ? `
           <div class="clean-popup__row">
             <span>Escola mais próxima</span>
             <strong>${Number(props['dist_escola_km']).toFixed(1)} km</strong>
@@ -742,11 +763,14 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
   }
 
   if (layer === 'seguranca') {
-    const metricLabel = filtersStore.segurancaMetrica === 'ocorrencias' ? 'Ocorrências' : 'Vítimas'
+    const isVitimas = String(filtersStore.segurancaMetrica).includes('vitimas')
+    const metricLabel = isVitimas ? 'Total de Vítimas' : 'Total de Ocorrências'
     const crimeLabel = filtersStore.segurancaTipoCrime === 'todos' ? 'Todos os crimes' : filtersStore.segurancaTipoCrime
     const val = Number(props['val'] ?? props['qtd_ocorrencias'] ?? 0).toLocaleString('pt-BR')
     const vitimas = Number(props['qtd_vitimas'] ?? 0).toLocaleString('pt-BR')
-    const taxa = props['taxa_100k'] != null ? Number(props['taxa_100k']).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) : '—'
+    const pop = Number(props['populacao_2022'] ?? 0).toLocaleString('pt-BR')
+    const taxa = props['taxa_100k'] != null ? Number(props['taxa_100k']).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—'
+    const weightPct = props['weight'] != null ? `${Math.round(Number(props['weight']) * 100)}%` : '—'
     const periodo = filtersStore.segurancaAno ? `${filtersStore.segurancaAno}` : 'Todos os anos'
     const mesTxt = filtersStore.segurancaMes ? ` · Mês ${filtersStore.segurancaMes}` : ''
 
@@ -755,13 +779,25 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
         <div class="clean-popup__badge" style="background: rgba(239, 68, 68, 0.12); color: #ef4444;">Segurança Pública (SINESP)</div>
         <h4 class="clean-popup__title">${props['nm_municipio'] ?? 'Município'}</h4>
         <div class="clean-popup__rows">
-          <div class="clean-popup__row">
-            <span>${metricLabel}</span>
-            <strong style="color: #ef4444; font-size: 0.95rem;">${val}</strong>
+          <div class="clean-popup__row" style="background: rgba(239, 68, 68, 0.08); padding: 5px 8px; border-radius: 6px; margin: 3px 0;">
+            <span style="font-weight: 600; color: #dc2626;">Índice / 100k hab.</span>
+            <strong style="color: #dc2626; font-size: 1.05rem; font-weight: 700;">${taxa}</strong>
           </div>
           <div class="clean-popup__row">
-            <span>Taxa (por 100k hab.)</span>
-            <strong>${taxa}</strong>
+            <span>População (Censo 2022)</span>
+            <strong>${pop} hab.</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>${metricLabel}</span>
+            <strong style="font-size: 0.95rem;">${val}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Total de Vítimas</span>
+            <strong>${vitimas}</strong>
+          </div>
+          <div class="clean-popup__row">
+            <span>Intensidade Relativa</span>
+            <strong style="color: #64748b;">${weightPct}</strong>
           </div>
           <div class="clean-popup__row">
             <span>Tipo de Crime</span>
@@ -770,10 +806,6 @@ function buildPopupHTML(layer: string, props: Record<string, unknown>): string {
           <div class="clean-popup__row">
             <span>Período</span>
             <strong>${periodo}${mesTxt}</strong>
-          </div>
-          <div class="clean-popup__row">
-            <span>Total de Vítimas</span>
-            <strong>${vitimas}</strong>
           </div>
         </div>
       </div>

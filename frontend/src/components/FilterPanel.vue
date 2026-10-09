@@ -190,6 +190,33 @@
 
       <!-- ─── SEGURANÇA ───────────────────────────────────────────────────────── -->
       <div v-if="filtersStore.activeTab === 'seguranca'" class="filter-panel__body">
+        <!-- Info card explicativo do índice -->
+        <div class="filter-info-card">
+          <AtlasIcon name="shield" :size="16" custom-class="info-icon info-icon--security" />
+          <div>
+            <p class="filter-info-card__title">Segurança Pública — SINESP</p>
+            <p class="filter-info-card__desc">
+              Cores calculadas proporcionalmente à população e volume de ocorrências (taxa por 100k hab.).
+            </p>
+          </div>
+        </div>
+
+        <!-- Métrica de Análise -->
+        <div class="filter-item">
+          <span class="filter-item__label">Métrica de Visualização</span>
+          <div class="filter-chip-group">
+            <button
+              v-for="metrica in segurancaMetricasOpts"
+              :key="metrica.value"
+              class="filter-chip"
+              :class="{ 'filter-chip--active': filtersStore.segurancaMetrica === metrica.value }"
+              @click="filtersStore.setSegurancaMetrica(metrica.value)"
+            >
+              {{ metrica.label }}
+            </button>
+          </div>
+        </div>
+
         <!-- Ano -->
         <div class="filter-item">
           <div class="filter-item__header">
@@ -252,16 +279,16 @@
         <!-- Legenda choropleth -->
         <div class="choropleth-legend-card">
           <div class="choropleth-legend-card__header">
-            <span class="choropleth-legend-card__title">Intensidade Municipal</span>
+            <span class="choropleth-legend-card__title">Índice Municipal</span>
             <span class="choropleth-legend-card__metric">
-              {{ filtersStore.segurancaMetrica === 'ocorrencias' ? 'Ocorrências' : 'Vítimas' }}
+              {{ currentSegurancaMetricaLabel }}
             </span>
           </div>
           <div class="choropleth-legend-bar" />
           <div class="choropleth-legend-labels">
-            <span>Baixa</span>
-            <span>Média</span>
-            <span>Alta</span>
+            <span>Baixa taxa</span>
+            <span>Média (~P50)</span>
+            <span>Crítica (≥ P95)</span>
           </div>
         </div>
 
@@ -400,7 +427,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useFiltersStore, type DependenciaRede, type HealthType, type RoadType } from '@/stores/filtersStore'
+import { useFiltersStore, type DependenciaRede, type HealthType, type RoadType, type SegurancaMetrica } from '@/stores/filtersStore'
 import AtlasIcon, { type IconName } from '@/components/AtlasIcon.vue'
 
 const filtersStore = useFiltersStore()
@@ -451,6 +478,21 @@ const queimadasMetricaLabel = computed(() => {
 })
 
 // ─── Segurança ───────────────────────────────────────────────────────────────
+const segurancaMetricasOpts: { value: SegurancaMetrica; label: string }[] = [
+  { value: 'taxa_100k', label: 'Taxa / 100k hab. (Proporcional)' },
+  { value: 'taxa_vitimas', label: 'Vítimas / 100k' },
+  { value: 'ocorrencias_absoluto', label: 'Total Ocorrências' },
+  { value: 'vitimas_absoluto', label: 'Total Vítimas' },
+]
+
+const currentSegurancaMetricaLabel = computed(() => {
+  if (filtersStore.segurancaMetrica === 'taxa_100k') return 'Taxa / 100k hab.'
+  if (filtersStore.segurancaMetrica === 'taxa_vitimas') return 'Vítimas / 100k hab.'
+  if (filtersStore.segurancaMetrica === 'ocorrencias_absoluto' || filtersStore.segurancaMetrica === 'ocorrencias') return 'Total Ocorrências'
+  if (filtersStore.segurancaMetrica === 'vitimas_absoluto' || filtersStore.segurancaMetrica === 'vitimas') return 'Total Vítimas'
+  return 'Taxa Proporcional'
+})
+
 const mesesList = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
@@ -950,6 +992,10 @@ const roadOpts: { value: RoadType; label: string; color: string }[] = [
 
 .info-icon--fire {
   color: #ea580c !important;
+}
+
+.info-icon--security {
+  color: #ef4444 !important;
 }
 
 .choropleth-legend-card__metric--fire {
